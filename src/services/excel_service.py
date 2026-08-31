@@ -225,3 +225,49 @@ def delete_column(
     worksheet.delete_cols(column_number, 1)
 
     workbook.save(file_path)
+
+# ============================================================
+# Excel Search
+# ============================================================
+
+
+def search_excel(
+    excel_file: ExcelFile,
+    sheet_name: str,
+    search_term: str,
+) -> list[dict]:
+    file_path = get_excel_file_path(excel_file)
+
+    workbook = load_workbook(
+        file_path,
+        data_only=False,
+    )
+
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet '{sheet_name}' not found")
+
+    if not search_term.strip():
+        raise ValueError("Search term cannot be empty")
+
+    worksheet = workbook[sheet_name]
+
+    results = []
+
+    for row in worksheet.iter_rows():
+        for cell in row:
+            if cell.value is None:
+                continue
+
+            cell_value = str(cell.value)
+
+            if search_term.lower() in cell_value.lower():
+                results.append(
+                    {
+                        "row_number": cell.row,
+                        "column_number": cell.column,
+                        "cell": cell.coordinate,
+                        "value": cell.value,
+                    }
+                )
+
+    return results

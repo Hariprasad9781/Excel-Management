@@ -8,6 +8,7 @@ from api.schemas import (
     ColumnDeleteRequest,
     ColumnOperationResponse,
     ColumnUpdateRequest,
+    ExcelSearchResponse,
     RowAddRequest,
     RowDeleteRequest,
     RowOperationResponse,
@@ -26,6 +27,7 @@ from services.excel_service import (
     delete_row,
     get_sheet_names,
     get_sheet_preview,
+    search_excel,
     update_cell,
     update_column,
     update_row,
@@ -507,4 +509,60 @@ def delete_excel_column(
         "sheet_name": data.sheet_name,
         "column_number": data.column_number,
         "message": "Column deleted successfully",
+    }
+
+# -------------------------------------------------------------------
+# Excel Search
+# -------------------------------------------------------------------
+
+
+@router.get(
+    "/{file_id}/search",
+    response_model=ExcelSearchResponse,
+)
+def search_file(
+    file_id: int,
+    sheet_name: str,
+    search_term: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    excel_file = get_user_file(
+        file_id=file_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    try:
+        results = search_excel(
+            excel_file=excel_file,
+            sheet_name=sheet_name,
+            search_term=search_term,
+        )
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored file not found",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to search Excel file: {exc}",
+        )
+
+    return {
+        "file_id": excel_file.id,
+        "filename": excel_file.original_filename,
+        "sheet_name": sheet_name,
+        "search_term": search_term,
+        "results": results,
+        "result_count": len(results),
     }

@@ -157,3 +157,27 @@ class ColumnOperationResponse(BaseModel):
     sheet_name: str
     column_number: int
     message: str
+
+# ============================================================
+# Excel Search
+# ============================================================
+
+class ExcelSearchRequest(BaseModel):
+    sheet_name: str
+    search_term: str
+
+
+class ExcelSearchResult(BaseModel):
+    row_number: int
+    column_number: int
+    cell: str
+    value: str | int | float | bool | None
+
+
+class ExcelSearchResponse(BaseModel):
+    file_id: int
+    filename: str
+    sheet_name: str
+    search_term: str
+    results: list[ExcelSearchResult]
+    result_count: int
