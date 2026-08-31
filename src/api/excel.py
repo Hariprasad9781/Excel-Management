@@ -4,6 +4,10 @@ from sqlalchemy.orm import Session
 from api.schemas import (
     CellUpdate,
     CellUpdateResponse,
+    ColumnAddRequest,
+    ColumnDeleteRequest,
+    ColumnOperationResponse,
+    ColumnUpdateRequest,
     RowAddRequest,
     RowDeleteRequest,
     RowOperationResponse,
@@ -16,14 +20,16 @@ from dependencies import get_current_user
 from models.excel_file import ExcelFile
 from models.user import User
 from services.excel_service import (
+    add_column,
     add_row,
+    delete_column,
     delete_row,
     get_sheet_names,
     get_sheet_preview,
     update_cell,
+    update_column,
     update_row,
 )
-
 
 router = APIRouter(
     prefix="/files",
@@ -348,4 +354,157 @@ def delete_excel_row(
         "sheet_name": data.sheet_name,
         "row_number": data.row_number,
         "message": "Row deleted successfully",
+    }
+
+# -------------------------------------------------------------------
+# Column Operations
+# -------------------------------------------------------------------
+
+
+@router.post(
+    "/{file_id}/columns",
+    response_model=ColumnOperationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_excel_column(
+    file_id: int,
+    data: ColumnAddRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    excel_file = get_user_file(
+        file_id=file_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    try:
+        add_column(
+            excel_file=excel_file,
+            sheet_name=data.sheet_name,
+            column_number=data.column_number,
+        )
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored file not found",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to add column: {exc}",
+        )
+
+    return {
+        "file_id": file_id,
+        "sheet_name": data.sheet_name,
+        "column_number": data.column_number,
+        "message": "Column added successfully",
+    }
+
+
+@router.put(
+    "/{file_id}/columns",
+    response_model=ColumnOperationResponse,
+)
+def update_excel_column(
+    file_id: int,
+    data: ColumnUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    excel_file = get_user_file(
+        file_id=file_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    try:
+        update_column(
+            excel_file=excel_file,
+            sheet_name=data.sheet_name,
+            column_number=data.column_number,
+            column_name=data.column_name,
+        )
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored file not found",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to update column: {exc}",
+        )
+
+    return {
+        "file_id": file_id,
+        "sheet_name": data.sheet_name,
+        "column_number": data.column_number,
+        "message": "Column updated successfully",
+    }
+
+
+@router.delete(
+    "/{file_id}/columns",
+    response_model=ColumnOperationResponse,
+)
+def delete_excel_column(
+    file_id: int,
+    data: ColumnDeleteRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    excel_file = get_user_file(
+        file_id=file_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    try:
+        delete_column(
+            excel_file=excel_file,
+            sheet_name=data.sheet_name,
+            column_number=data.column_number,
+        )
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored file not found",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to delete column: {exc}",
+        )
+
+    return {
+        "file_id": file_id,
+        "sheet_name": data.sheet_name,
+        "column_number": data.column_number,
+        "message": "Column deleted successfully",
     }

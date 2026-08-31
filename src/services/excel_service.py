@@ -146,3 +146,82 @@ def delete_row(
     worksheet.delete_rows(row_number, 1)
 
     workbook.save(file_path)
+
+# ============================================================
+# Column Operations
+# ============================================================
+
+
+def add_column(
+    excel_file: ExcelFile,
+    sheet_name: str,
+    column_number: int,
+) -> None:
+    file_path = get_excel_file_path(excel_file)
+
+    workbook = load_workbook(file_path)
+
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet '{sheet_name}' not found")
+
+    worksheet = workbook[sheet_name]
+
+    if column_number < 1:
+        raise ValueError("Column number must be greater than 0")
+
+    worksheet.insert_cols(column_number, 1)
+
+    workbook.save(file_path)
+
+
+def update_column(
+    excel_file: ExcelFile,
+    sheet_name: str,
+    column_number: int,
+    column_name: str,
+) -> None:
+    file_path = get_excel_file_path(excel_file)
+
+    workbook = load_workbook(file_path)
+
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet '{sheet_name}' not found")
+
+    worksheet = workbook[sheet_name]
+
+    if column_number < 1 or column_number > worksheet.max_column:
+        raise ValueError(f"Column {column_number} not found")
+
+    if not column_name.strip():
+        raise ValueError("Column name cannot be empty")
+
+    # Update the first-row header
+    worksheet.cell(
+        row=1,
+        column=column_number,
+        value=column_name,
+    )
+
+    workbook.save(file_path)
+
+
+def delete_column(
+    excel_file: ExcelFile,
+    sheet_name: str,
+    column_number: int,
+) -> None:
+    file_path = get_excel_file_path(excel_file)
+
+    workbook = load_workbook(file_path)
+
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet '{sheet_name}' not found")
+
+    worksheet = workbook[sheet_name]
+
+    if column_number < 1 or column_number > worksheet.max_column:
+        raise ValueError(f"Column {column_number} not found")
+
+    worksheet.delete_cols(column_number, 1)
+
+    workbook.save(file_path)

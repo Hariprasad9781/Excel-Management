@@ -131,3 +131,29 @@ class RowOperationResponse(BaseModel):
     sheet_name: str
     row_number: int
     message: str
+
+# ============================================================
+# Column Operations
+# ============================================================
+
+class ColumnAddRequest(BaseModel):
+    sheet_name: str
+    column_number: int
+
+
+class ColumnUpdateRequest(BaseModel):
+    sheet_name: str
+    column_number: int
+    column_name: str
+
+
+class ColumnDeleteRequest(BaseModel):
+    sheet_name: str
+    column_number: int
+
+
+class ColumnOperationResponse(BaseModel):
+    file_id: int
+    sheet_name: str
+    column_number: int
+    message: str
