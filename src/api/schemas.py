@@ -87,6 +87,25 @@ class SheetPreviewResponse(BaseModel):
     rows: list[dict]
     row_count: int
 
+# ============================================================
+# Sheet Operations
+# ============================================================
+
+class SheetCreateRequest(BaseModel):
+    sheet_name: str
+
+
+class SheetOperationResponse(BaseModel):
+    file_id: int
+    sheet_name: str
+    message: str
+
+class SheetRenameRequest(BaseModel):
+    sheet_name: str
+    new_sheet_name: str
+
+class SheetDeleteRequest(BaseModel):
+    sheet_name: str
 
 # ============================================================
 # Cell Operations

@@ -20,6 +20,66 @@ def get_sheet_names(excel_file: ExcelFile) -> list[str]:
 
     return excel.sheet_names
 
+def create_sheet(
+    excel_file: ExcelFile,
+    sheet_name: str,
+) -> None:
+    file_path = get_excel_file_path(excel_file)
+
+    workbook = load_workbook(file_path)
+
+    if not sheet_name.strip():
+        raise ValueError("Sheet name cannot be empty")
+
+    if sheet_name in workbook.sheetnames:
+        raise ValueError(f"Sheet '{sheet_name}' already exists")
+
+    workbook.create_sheet(sheet_name)
+
+    workbook.save(file_path)
+
+def rename_sheet(
+    excel_file: ExcelFile,
+    sheet_name: str,
+    new_sheet_name: str,
+) -> None:
+    file_path = get_excel_file_path(excel_file)
+
+    workbook = load_workbook(file_path)
+
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet '{sheet_name}' not found")
+
+    if not new_sheet_name.strip():
+        raise ValueError("New sheet name cannot be empty")
+
+    if new_sheet_name in workbook.sheetnames:
+        raise ValueError(f"Sheet '{new_sheet_name}' already exists")
+
+    worksheet = workbook[sheet_name]
+    worksheet.title = new_sheet_name
+
+    workbook.save(file_path)
+
+def delete_sheet(
+    excel_file: ExcelFile,
+    sheet_name: str,
+) -> None:
+    file_path = get_excel_file_path(excel_file)
+
+    workbook = load_workbook(file_path)
+
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet '{sheet_name}' not found")
+
+    if len(workbook.sheetnames) == 1:
+        raise ValueError("Cannot delete the only sheet in the workbook")
+
+    worksheet = workbook[sheet_name]
+    workbook.remove(worksheet)
+
+    workbook.save(file_path)
+
 
 def get_sheet_preview(
     excel_file: ExcelFile,
