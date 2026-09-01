@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from desktop.services.api_client import ApiClient
 from desktop.windows.dashboard_window import DashboardWindow
+from desktop.windows.register_window import RegisterWindow
 
 
 class LoginWindow(QWidget):
@@ -27,6 +28,9 @@ class LoginWindow(QWidget):
         # Dashboard window reference
         self.dashboard_window = None
 
+        # Register window reference
+        self.register_window = None 
+        
         # Setup UI
         self.setup_ui()
 
@@ -337,15 +341,14 @@ class LoginWindow(QWidget):
 
     def handle_register(self):
         """
-        Registration UI will be connected here.
-
-        Until the registration window is implemented,
-        show an informational message instead of allowing
-        the button to appear non-functional.
+        Open the registration window.
         """
 
-        QMessageBox.information(
-            self,
-            "Registration",
-            "Registration screen is not implemented yet.",
+        self.hide()
+
+        self.register_window = RegisterWindow(
+            api_client=self.api_client,
+            login_window=self,
         )
+
+        self.register_window.show()

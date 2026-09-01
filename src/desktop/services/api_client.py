@@ -53,6 +53,37 @@ class ApiClient:
 
         return data
 
+    def register(
+        self,
+        username: str,
+        email: str,
+        password: str,
+    ) -> dict:
+        """
+        Register a new user.
+        """
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/auth/register",
+                json={
+                    "username": username,
+                    "email": email,
+                    "password": password,
+                },
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            raise Exception(
+                f"Unable to connect to server: {exc}"
+            ) from exc
+
+        return self._handle_response(
+            response=response,
+            expected_status=201,
+            default_message="Registration failed",
+        )
+
     def logout(self) -> None:
         """
         Clear the locally stored access token.
