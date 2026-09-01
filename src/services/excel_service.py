@@ -6,76 +6,119 @@ from openpyxl import load_workbook
 from models.excel_file import ExcelFile
 
 
-def get_excel_file_path(excel_file: ExcelFile) -> str:
+# ============================================================
+# File Helpers
+# ============================================================
+
+
+def get_excel_file_path(
+    excel_file: ExcelFile,
+) -> str:
     if not os.path.exists(excel_file.file_path):
-        raise FileNotFoundError("Stored file not found")
+        raise FileNotFoundError(
+            "Stored file not found"
+        )
 
     return excel_file.file_path
 
 
-def get_sheet_names(excel_file: ExcelFile) -> list[str]:
-    file_path = get_excel_file_path(excel_file)
+# ============================================================
+# Sheet Operations
+# ============================================================
+
+
+def get_sheet_names(
+    excel_file: ExcelFile,
+) -> list[str]:
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     excel = pd.ExcelFile(file_path)
 
     return excel.sheet_names
 
+
 def create_sheet(
     excel_file: ExcelFile,
     sheet_name: str,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if not sheet_name.strip():
-        raise ValueError("Sheet name cannot be empty")
+        raise ValueError(
+            "Sheet name cannot be empty"
+        )
 
     if sheet_name in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' already exists")
+        raise ValueError(
+            f"Sheet '{sheet_name}' already exists"
+        )
 
     workbook.create_sheet(sheet_name)
 
     workbook.save(file_path)
+
 
 def rename_sheet(
     excel_file: ExcelFile,
     sheet_name: str,
     new_sheet_name: str,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     if not new_sheet_name.strip():
-        raise ValueError("New sheet name cannot be empty")
+        raise ValueError(
+            "New sheet name cannot be empty"
+        )
 
     if new_sheet_name in workbook.sheetnames:
-        raise ValueError(f"Sheet '{new_sheet_name}' already exists")
+        raise ValueError(
+            f"Sheet '{new_sheet_name}' already exists"
+        )
 
     worksheet = workbook[sheet_name]
+
     worksheet.title = new_sheet_name
 
     workbook.save(file_path)
+
 
 def delete_sheet(
     excel_file: ExcelFile,
     sheet_name: str,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     if len(workbook.sheetnames) == 1:
-        raise ValueError("Cannot delete the only sheet in the workbook")
+        raise ValueError(
+            "Cannot delete the only sheet in the workbook"
+        )
 
     worksheet = workbook[sheet_name]
+
     workbook.remove(worksheet)
 
     workbook.save(file_path)
@@ -86,12 +129,16 @@ def get_sheet_preview(
     sheet_name: str,
     rows: int = 10,
 ) -> dict:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     excel = pd.ExcelFile(file_path)
 
     if sheet_name not in excel.sheet_names:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     df = pd.read_excel(
         file_path,
@@ -104,9 +151,16 @@ def get_sheet_preview(
     return {
         "sheet_name": sheet_name,
         "columns": df.columns.tolist(),
-        "rows": df.to_dict(orient="records"),
+        "rows": df.to_dict(
+            orient="records"
+        ),
         "row_count": len(df),
     }
+
+
+# ============================================================
+# Cell Operations
+# ============================================================
 
 
 def update_cell(
@@ -115,12 +169,16 @@ def update_cell(
     cell: str,
     value: str | int | float | bool | None,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     worksheet = workbook[sheet_name]
 
@@ -137,14 +195,20 @@ def update_cell(
 def add_row(
     excel_file: ExcelFile,
     sheet_name: str,
-    row_data: list[str | int | float | bool | None],
+    row_data: list[
+        str | int | float | bool | None
+    ],
 ) -> int:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     worksheet = workbook[sheet_name]
 
@@ -162,21 +226,35 @@ def update_row(
     excel_file: ExcelFile,
     sheet_name: str,
     row_number: int,
-    row_data: list[str | int | float | bool | None],
+    row_data: list[
+        str | int | float | bool | None
+    ],
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     worksheet = workbook[sheet_name]
 
-    if row_number < 1 or row_number > worksheet.max_row:
-        raise ValueError(f"Row {row_number} not found")
+    if (
+        row_number < 1
+        or row_number > worksheet.max_row
+    ):
+        raise ValueError(
+            f"Row {row_number} not found"
+        )
 
-    for column_number, value in enumerate(row_data, start=1):
+    for column_number, value in enumerate(
+        row_data,
+        start=1,
+    ):
         worksheet.cell(
             row=row_number,
             column=column_number,
@@ -191,21 +269,34 @@ def delete_row(
     sheet_name: str,
     row_number: int,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     worksheet = workbook[sheet_name]
 
-    if row_number < 1 or row_number > worksheet.max_row:
-        raise ValueError(f"Row {row_number} not found")
+    if (
+        row_number < 1
+        or row_number > worksheet.max_row
+    ):
+        raise ValueError(
+            f"Row {row_number} not found"
+        )
 
-    worksheet.delete_rows(row_number, 1)
+    worksheet.delete_rows(
+        row_number,
+        1,
+    )
 
     workbook.save(file_path)
+
 
 # ============================================================
 # Column Operations
@@ -217,19 +308,29 @@ def add_column(
     sheet_name: str,
     column_number: int,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     worksheet = workbook[sheet_name]
 
     if column_number < 1:
-        raise ValueError("Column number must be greater than 0")
+        raise ValueError(
+            "Column number must be greater than 0"
+        )
 
-    worksheet.insert_cols(column_number, 1)
+    # Insert a blank column
+    worksheet.insert_cols(
+        column_number,
+        1,
+    )
 
     workbook.save(file_path)
 
@@ -240,20 +341,31 @@ def update_column(
     column_number: int,
     column_name: str,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     worksheet = workbook[sheet_name]
 
-    if column_number < 1 or column_number > worksheet.max_column:
-        raise ValueError(f"Column {column_number} not found")
+    if (
+        column_number < 1
+        or column_number > worksheet.max_column
+    ):
+        raise ValueError(
+            f"Column {column_number} not found"
+        )
 
     if not column_name.strip():
-        raise ValueError("Column name cannot be empty")
+        raise ValueError(
+            "Column name cannot be empty"
+        )
 
     # Update the first-row header
     worksheet.cell(
@@ -270,21 +382,34 @@ def delete_column(
     sheet_name: str,
     column_number: int,
 ) -> None:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(file_path)
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     worksheet = workbook[sheet_name]
 
-    if column_number < 1 or column_number > worksheet.max_column:
-        raise ValueError(f"Column {column_number} not found")
+    if (
+        column_number < 1
+        or column_number > worksheet.max_column
+    ):
+        raise ValueError(
+            f"Column {column_number} not found"
+        )
 
-    worksheet.delete_cols(column_number, 1)
+    worksheet.delete_cols(
+        column_number,
+        1,
+    )
 
     workbook.save(file_path)
+
 
 # ============================================================
 # Excel Search
@@ -296,7 +421,9 @@ def search_excel(
     sheet_name: str,
     search_term: str,
 ) -> list[dict]:
-    file_path = get_excel_file_path(excel_file)
+    file_path = get_excel_file_path(
+        excel_file
+    )
 
     workbook = load_workbook(
         file_path,
@@ -304,10 +431,14 @@ def search_excel(
     )
 
     if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet '{sheet_name}' not found")
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
 
     if not search_term.strip():
-        raise ValueError("Search term cannot be empty")
+        raise ValueError(
+            "Search term cannot be empty"
+        )
 
     worksheet = workbook[sheet_name]
 
@@ -320,7 +451,10 @@ def search_excel(
 
             cell_value = str(cell.value)
 
-            if search_term.lower() in cell_value.lower():
+            if (
+                search_term.lower()
+                in cell_value.lower()
+            ):
                 results.append(
                     {
                         "row_number": cell.row,
