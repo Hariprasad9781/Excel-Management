@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from typing import Literal
 from pydantic import BaseModel, EmailStr
 
 
@@ -235,7 +236,12 @@ class ExcelFormatRequest(BaseModel):
     # Font formatting
     bold: bool | None = None
     italic: bool | None = None
-    underline: bool | None = None
+    underline: Literal[
+        "single",
+        "double",   
+        "singleAccounting",
+        "doubleAccounting",
+    ] | None = None
     font_size: float | None = None
     font_color: str | None = None
 

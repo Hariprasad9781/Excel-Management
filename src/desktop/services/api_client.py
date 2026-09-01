@@ -1,7 +1,14 @@
+import os
+
 import requests
 
 
 class ApiClient:
+    """
+    HTTP client used by the desktop application
+    to communicate with the FastAPI backend.
+    """
+
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:8000",
@@ -18,39 +25,61 @@ class ApiClient:
         username: str,
         password: str,
     ) -> dict:
-        response = requests.post(
-            f"{self.base_url}/auth/login",
-            json={
-                "username": username,
-                "password": password,
-            },
-            timeout=10,
+        """
+        Login and store the JWT access token.
+        """
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/auth/login",
+                json={
+                    "username": username,
+                    "password": password,
+                },
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            raise Exception(
+                f"Unable to connect to server: {exc}"
+            ) from exc
+
+        data = self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Login failed",
         )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Login failed",
-                )
-            except ValueError:
-                detail = "Login failed"
-
-            raise Exception(detail)
-
-        data = response.json()
 
         self.access_token = data["access_token"]
 
         return data
 
+    def logout(self) -> None:
+        """
+        Clear the locally stored access token.
+        """
+
+        self.access_token = None
+
     # =========================================================
-    # Headers
+    # Authentication Helpers
     # =========================================================
 
-    def _headers(self) -> dict:
+    def _require_login(self) -> None:
+        """
+        Make sure the user is authenticated.
+        """
+
         if not self.access_token:
-            return {}
+            raise Exception(
+                "You are not logged in."
+            )
+
+    def _headers(self) -> dict:
+        """
+        Return authorization headers.
+        """
+
+        self._require_login()
 
         return {
             "Authorization": (
@@ -59,14 +88,90 @@ class ApiClient:
         }
 
     # =========================================================
-    # Get Files
+    # Response Handling
+    # =========================================================
+
+    @staticmethod
+    def _get_error_detail(
+        response: requests.Response,
+        default_message: str,
+    ) -> str:
+        """
+        Extract FastAPI's 'detail' message when available.
+        """
+
+        try:
+            data = response.json()
+
+            if isinstance(data, dict):
+                detail = data.get("detail")
+
+                if detail:
+                    return str(detail)
+
+        except ValueError:
+            pass
+
+        return default_message
+
+    def _handle_response(
+        self,
+        response: requests.Response,
+        expected_status: int,
+        default_message: str,
+    ):
+        """
+        Validate an HTTP response and return JSON data.
+        """
+
+        if response.status_code != expected_status:
+            detail = self._get_error_detail(
+                response=response,
+                default_message=default_message,
+            )
+
+            raise Exception(
+                f"{detail} "
+                f"(HTTP {response.status_code})"
+            )
+
+        try:
+            return response.json()
+
+        except ValueError as exc:
+            raise Exception(
+                "Server returned an invalid response."
+            ) from exc
+
+    # =========================================================
+    # Get Current User
+    # =========================================================
+
+    def get_current_user(self) -> dict:
+        """
+        Get the currently authenticated user.
+        """
+
+        response = requests.get(
+            f"{self.base_url}/auth/me",
+            headers=self._headers(),
+            timeout=10,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to fetch current user",
+        )
+
+    # =========================================================
+    # File Operations
     # =========================================================
 
     def get_files(self) -> list[dict]:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Get files belonging to the logged-in user.
+        """
 
         response = requests.get(
             f"{self.base_url}/files/",
@@ -74,40 +179,43 @@ class ApiClient:
             timeout=10,
         )
 
-        print(
-            "GET /files/ status:",
-            response.status_code,
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to fetch files",
         )
 
-        print(
-            "GET /files/ response:",
-            response.text,
+    def get_file_details(
+        self,
+        file_id: int,
+    ) -> dict:
+        """
+        Get details of a specific Excel file.
+        """
+
+        response = requests.get(
+            f"{self.base_url}/files/{file_id}",
+            headers=self._headers(),
+            timeout=10,
         )
 
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to fetch files",
-                )
-            except ValueError:
-                detail = "Failed to fetch files"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Upload File
-    # =========================================================
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to fetch file details",
+        )
 
     def upload_file(
         self,
         file_path: str,
     ) -> dict:
-        if not self.access_token:
+        """
+        Upload an Excel file.
+        """
+
+        if not os.path.isfile(file_path):
             raise Exception(
-                "You are not logged in."
+                f"File not found: {file_path}"
             )
 
         try:
@@ -115,6 +223,7 @@ class ApiClient:
                 file_path,
                 "rb",
             ) as file:
+
                 response = requests.post(
                     f"{self.base_url}/files/upload",
                     headers=self._headers(),
@@ -129,55 +238,64 @@ class ApiClient:
                 f"Could not open file: {exc}"
             ) from exc
 
-        if response.status_code != 201:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "File upload failed",
-                )
-            except ValueError:
-                detail = "File upload failed"
+        except requests.RequestException as exc:
+            raise Exception(
+                f"File upload failed: {exc}"
+            ) from exc
 
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Download File
-    # =========================================================
+        return self._handle_response(
+            response=response,
+            expected_status=201,
+            default_message="File upload failed",
+        )
 
     def download_file(
         self,
         file_id: int,
         save_path: str,
     ) -> None:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
-
-        response = requests.get(
-            f"{self.base_url}/files/{file_id}/download",
-            headers=self._headers(),
-            timeout=30,
-        )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "File download failed",
-                )
-            except ValueError:
-                detail = "File download failed"
-
-            raise Exception(detail)
+        """
+        Download an Excel file to the specified local path.
+        """
 
         try:
+            response = requests.get(
+                f"{self.base_url}/files/{file_id}/download",
+                headers=self._headers(),
+                timeout=30,
+            )
+
+        except requests.RequestException as exc:
+            raise Exception(
+                f"File download failed: {exc}"
+            ) from exc
+
+        if response.status_code != 200:
+            detail = self._get_error_detail(
+                response=response,
+                default_message="File download failed",
+            )
+
+            raise Exception(
+                f"{detail} "
+                f"(HTTP {response.status_code})"
+            )
+
+        try:
+            parent_directory = os.path.dirname(
+                os.path.abspath(save_path)
+            )
+
+            os.makedirs(
+                parent_directory,
+                exist_ok=True,
+            )
+
             with open(
                 save_path,
                 "wb",
             ) as file:
+
                 file.write(
                     response.content
                 )
@@ -187,8 +305,161 @@ class ApiClient:
                 f"Could not save downloaded file: {exc}"
             ) from exc
 
+    def delete_file(
+        self,
+        file_id: int,
+    ) -> dict:
+        """
+        Delete an Excel file.
+        """
+
+        response = requests.delete(
+            f"{self.base_url}/files/{file_id}",
+            headers=self._headers(),
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="File deletion failed",
+        )
+
     # =========================================================
-    # Update Cell
+    # Sheet Operations
+    # =========================================================
+
+    def get_sheets(
+        self,
+        file_id: int,
+    ) -> dict:
+        """
+        Get all worksheet names.
+        """
+
+        response = requests.get(
+            f"{self.base_url}/files/{file_id}/sheets",
+            headers=self._headers(),
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to fetch sheets",
+        )
+
+    def create_sheet(
+        self,
+        file_id: int,
+        sheet_name: str,
+    ) -> dict:
+        """
+        Create a new worksheet.
+        """
+
+        response = requests.post(
+            f"{self.base_url}/files/{file_id}/sheets",
+            headers=self._headers(),
+            json={
+                "sheet_name": sheet_name,
+            },
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=201,
+            default_message="Failed to create sheet",
+        )
+
+    def rename_sheet(
+        self,
+        file_id: int,
+        sheet_name: str,
+        new_sheet_name: str,
+    ) -> dict:
+        """
+        Rename an existing worksheet.
+        """
+
+        response = requests.put(
+            f"{self.base_url}/files/{file_id}/sheets",
+            headers=self._headers(),
+            json={
+                "sheet_name": sheet_name,
+                "new_sheet_name": new_sheet_name,
+            },
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to rename sheet",
+        )
+
+    def delete_sheet(
+        self,
+        file_id: int,
+        sheet_name: str,
+    ) -> dict:
+        """
+        Delete an existing worksheet.
+        """
+
+        response = requests.delete(
+            f"{self.base_url}/files/{file_id}/sheets",
+            headers=self._headers(),
+            json={
+                "sheet_name": sheet_name,
+            },
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to delete sheet",
+        )
+
+    # =========================================================
+    # Sheet Preview
+    # =========================================================
+
+    def get_sheet_preview(
+        self,
+        file_id: int,
+        sheet_name: str,
+        rows: int = 10,
+    ) -> dict:
+        """
+        Get a preview of worksheet data.
+        """
+
+        if rows < 1 or rows > 100:
+            raise Exception(
+                "Rows must be between 1 and 100."
+            )
+
+        response = requests.get(
+            f"{self.base_url}/files/{file_id}/preview",
+            headers=self._headers(),
+            params={
+                "sheet_name": sheet_name,
+                "rows": rows,
+            },
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to fetch sheet preview",
+        )
+
+    # =========================================================
+    # Cell Operations
     # =========================================================
 
     def update_cell(
@@ -198,10 +469,9 @@ class ApiClient:
         cell: str,
         value,
     ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Update a single Excel cell.
+        """
 
         response = requests.put(
             f"{self.base_url}/files/{file_id}/cell",
@@ -214,21 +484,14 @@ class ApiClient:
             timeout=30,
         )
 
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to update cell",
-                )
-            except ValueError:
-                detail = "Failed to update cell"
-
-            raise Exception(detail)
-
-        return response.json()
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to update cell",
+        )
 
     # =========================================================
-    # Add Row
+    # Row Operations
     # =========================================================
 
     def add_row(
@@ -237,10 +500,9 @@ class ApiClient:
         sheet_name: str,
         row_data: list,
     ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Add a row to a worksheet.
+        """
 
         response = requests.post(
             f"{self.base_url}/files/{file_id}/rows",
@@ -252,80 +514,11 @@ class ApiClient:
             timeout=30,
         )
 
-        print(
-            "POST /rows status:",
-            response.status_code,
+        return self._handle_response(
+            response=response,
+            expected_status=201,
+            default_message="Failed to add row",
         )
-
-        print(
-            "POST /rows response:",
-            response.text,
-        )
-
-        if response.status_code != 201:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to add row",
-                )
-            except ValueError:
-                detail = "Failed to add row"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Delete Row
-    # =========================================================
-
-    def delete_row(
-        self,
-        file_id: int,
-        sheet_name: str,
-        row_number: int,
-    ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
-
-        response = requests.delete(
-            f"{self.base_url}/files/{file_id}/rows",
-            headers=self._headers(),
-            json={
-                "sheet_name": sheet_name,
-                "row_number": row_number,
-            },
-            timeout=30,
-        )
-
-        print(
-            "DELETE /rows status:",
-            response.status_code,
-        )
-
-        print(
-            "DELETE /rows response:",
-            response.text,
-        )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to delete row",
-                )
-            except ValueError:
-                detail = "Failed to delete row"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Update Row
-    # =========================================================
 
     def update_row(
         self,
@@ -334,10 +527,9 @@ class ApiClient:
         row_number: int,
         row_data: list,
     ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Update an existing row.
+        """
 
         response = requests.put(
             f"{self.base_url}/files/{file_id}/rows",
@@ -350,31 +542,40 @@ class ApiClient:
             timeout=30,
         )
 
-        print(
-            "PUT /rows status:",
-            response.status_code,
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to update row",
         )
 
-        print(
-            "PUT /rows response:",
-            response.text,
+    def delete_row(
+        self,
+        file_id: int,
+        sheet_name: str,
+        row_number: int,
+    ) -> dict:
+        """
+        Delete a row.
+        """
+
+        response = requests.delete(
+            f"{self.base_url}/files/{file_id}/rows",
+            headers=self._headers(),
+            json={
+                "sheet_name": sheet_name,
+                "row_number": row_number,
+            },
+            timeout=30,
         )
 
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to update row",
-                )
-            except ValueError:
-                detail = "Failed to update row"
-
-            raise Exception(detail)
-
-        return response.json()
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to delete row",
+        )
 
     # =========================================================
-    # Add Column
+    # Column Operations
     # =========================================================
 
     def add_column(
@@ -383,10 +584,9 @@ class ApiClient:
         sheet_name: str,
         column_number: int,
     ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Add a new column.
+        """
 
         response = requests.post(
             f"{self.base_url}/files/{file_id}/columns",
@@ -398,32 +598,11 @@ class ApiClient:
             timeout=30,
         )
 
-        print(
-            "POST /columns status:",
-            response.status_code,
+        return self._handle_response(
+            response=response,
+            expected_status=201,
+            default_message="Failed to add column",
         )
-
-        print(
-            "POST /columns response:",
-            response.text,
-        )
-
-        if response.status_code != 201:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to add column",
-                )
-            except ValueError:
-                detail = "Failed to add column"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Update Column / Rename Column
-    # =========================================================
 
     def update_column(
         self,
@@ -432,10 +611,9 @@ class ApiClient:
         column_number: int,
         column_name: str,
     ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Update the header/name of a column.
+        """
 
         response = requests.put(
             f"{self.base_url}/files/{file_id}/columns",
@@ -448,32 +626,11 @@ class ApiClient:
             timeout=30,
         )
 
-        print(
-            "PUT /columns status:",
-            response.status_code,
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to update column",
         )
-
-        print(
-            "PUT /columns response:",
-            response.text,
-        )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to update column",
-                )
-            except ValueError:
-                detail = "Failed to update column"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Delete Column
-    # =========================================================
 
     def delete_column(
         self,
@@ -481,10 +638,9 @@ class ApiClient:
         sheet_name: str,
         column_number: int,
     ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Delete a column.
+        """
 
         response = requests.delete(
             f"{self.base_url}/files/{file_id}/columns",
@@ -496,213 +652,14 @@ class ApiClient:
             timeout=30,
         )
 
-        print(
-            "DELETE /columns status:",
-            response.status_code,
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to delete column",
         )
-
-        print(
-            "DELETE /columns response:",
-            response.text,
-        )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to delete column",
-                )
-            except ValueError:
-                detail = "Failed to delete column"
-
-            raise Exception(detail)
-
-        return response.json()
 
     # =========================================================
-    # Get Sheet Names
-    # =========================================================
-
-    def get_sheets(
-        self,
-        file_id: int,
-    ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
-
-        response = requests.get(
-            f"{self.base_url}/files/{file_id}/sheets",
-            headers=self._headers(),
-            timeout=30,
-        )
-
-        print(
-            "GET /sheets status:",
-            response.status_code,
-        )
-
-        print(
-            "GET /sheets response:",
-            response.text,
-        )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to fetch sheets",
-                )
-            except ValueError:
-                detail = "Failed to fetch sheets"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Create Sheet
-    # =========================================================
-
-    def create_sheet(
-        self,
-        file_id: int,
-        sheet_name: str,
-    ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
-
-        response = requests.post(
-            f"{self.base_url}/files/{file_id}/sheets",
-            headers=self._headers(),
-            json={
-                "sheet_name": sheet_name,
-            },
-            timeout=30,
-        )
-
-        print(
-            "POST /sheets status:",
-            response.status_code,
-        )
-
-        print(
-            "POST /sheets response:",
-            response.text,
-        )
-
-        if response.status_code != 201:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to create sheet",
-                )
-            except ValueError:
-                detail = "Failed to create sheet"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Rename Sheet
-    # =========================================================
-
-    def rename_sheet(
-        self,
-        file_id: int,
-        sheet_name: str,
-        new_sheet_name: str,
-    ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
-
-        response = requests.put(
-            f"{self.base_url}/files/{file_id}/sheets",
-            headers=self._headers(),
-            json={
-                "sheet_name": sheet_name,
-                "new_sheet_name": new_sheet_name,
-            },
-            timeout=30,
-        )
-
-        print(
-            "PUT /sheets status:",
-            response.status_code,
-        )
-
-        print(
-            "PUT /sheets response:",
-            response.text,
-        )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to rename sheet",
-                )
-            except ValueError:
-                detail = "Failed to rename sheet"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Delete Sheet
-    # =========================================================
-
-    def delete_sheet(
-        self,
-        file_id: int,
-        sheet_name: str,
-    ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
-
-        response = requests.delete(
-            f"{self.base_url}/files/{file_id}/sheets",
-            headers=self._headers(),
-            json={
-                "sheet_name": sheet_name,
-            },
-            timeout=30,
-        )
-
-        print(
-            "DELETE /sheets status:",
-            response.status_code,
-        )
-
-        print(
-            "DELETE /sheets response:",
-            response.text,
-        )
-
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to delete sheet",
-                )
-            except ValueError:
-                detail = "Failed to delete sheet"
-
-            raise Exception(detail)
-
-        return response.json()
-
-    # =========================================================
-    # Search Excel
+    # Excel Search
     # =========================================================
 
     def search_excel(
@@ -711,15 +668,14 @@ class ApiClient:
         sheet_name: str,
         search_term: str,
     ) -> dict:
-        if not self.access_token:
-            raise Exception(
-                "You are not logged in."
-            )
+        """
+        Search an Excel worksheet.
 
-        if not sheet_name.strip():
-            raise Exception(
-                "Sheet name cannot be empty."
-            )
+        IMPORTANT:
+        The backend endpoint is GET /search,
+        so sheet_name and search_term are sent
+        as query parameters.
+        """
 
         if not search_term.strip():
             raise Exception(
@@ -736,25 +692,58 @@ class ApiClient:
             timeout=30,
         )
 
-        print(
-            "GET /search status:",
-            response.status_code,
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to search Excel",
         )
 
-        print(
-            "GET /search response:",
-            response.text,
+    # =========================================================
+    # Excel Formatting
+    # =========================================================
+
+    def format_excel_range(
+        self,
+        file_id: int,
+        sheet_name: str,
+        cell_range: str,
+        bold: bool | None = None,
+        italic: bool | None = None,
+        underline: str | None = None,
+        font_size: float | None = None,
+        font_color: str | None = None,
+        fill_color: str | None = None,
+        horizontal_alignment: str | None = None,
+        vertical_alignment: str | None = None,
+        number_format: str | None = None,
+    ) -> dict:
+        """
+        Apply formatting to a single cell or range.
+        """
+
+        payload = {
+            "sheet_name": sheet_name,
+            "cell_range": cell_range,
+            "bold": bold,
+            "italic": italic,
+            "underline": underline,
+            "font_size": font_size,
+            "font_color": font_color,
+            "fill_color": fill_color,
+            "horizontal_alignment": horizontal_alignment,
+            "vertical_alignment": vertical_alignment,
+            "number_format": number_format,
+        }
+
+        response = requests.put(
+            f"{self.base_url}/files/{file_id}/format",
+            headers=self._headers(),
+            json=payload,
+            timeout=30,
         )
 
-        if response.status_code != 200:
-            try:
-                detail = response.json().get(
-                    "detail",
-                    "Failed to search Excel",
-                )
-            except ValueError:
-                detail = "Failed to search Excel"
-
-            raise Exception(detail)
-
-        return response.json()
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to format Excel cells",
+        )

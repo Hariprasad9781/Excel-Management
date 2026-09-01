@@ -1,27 +1,63 @@
 import os
-import re
 import tempfile
-
-from openpyxl import load_workbook
+from copy import copy
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QColorDialog,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+from openpyxl import load_workbook
 
 
 class ExcelEditorWindow(QWidget):
+    """
+    Excel editor window.
+
+    The backend remains the source of truth for every structural
+    operation. The local workbook/table is updated only after the
+    backend operation succeeds.
+
+    Supported operations:
+        - Edit cells
+        - Save cell changes
+        - Add row
+        - Delete row
+        - Add column
+        - Rename column
+        - Delete column
+        - Create sheet
+        - Rename sheet
+        - Delete sheet
+        - Search workbook
+        - Font and fill formatting
+        - Alignment formatting
+        - Number formatting
+        - Table-style formatting preset
+        - Format Cells dialog
+        - Refresh workbook
+    """
+
     def __init__(
         self,
         file_id: int,
@@ -37,122 +73,88 @@ class ExcelEditorWindow(QWidget):
         self.workbook = None
         self.temp_file_path = None
 
-        # ---------------------------------------------------------
-        # Pending cell changes
-        # ---------------------------------------------------------
-
+        # Unsaved cell changes only.
+        # {(sheet_name, "A1"): value}
         self.pending_changes = {}
 
-        # ---------------------------------------------------------
-        # Internal state
-        # ---------------------------------------------------------
-
+        # Prevents cellChanged from treating programmatic table
+        # updates as user edits.
         self._loading_table = False
-        self._searching = False
+
+        # Formatting state.
+        # The backend accepts underline styles as strings.
+        self.underline_style = None
+
+        # Search results returned by the backend.
+        self.search_results = []
 
         self.setWindowTitle(
             f"Excel Editor - {self.filename}"
         )
-
-        self.setMinimumSize(
-            1200,
-            800,
-        )
+        self.setMinimumSize(1200, 700)
 
         self.setup_ui()
-
-        # ---------------------------------------------------------
-        # Load workbook
-        # ---------------------------------------------------------
-
         self.load_excel_file()
 
-        # ---------------------------------------------------------
-        # Button connections
-        # ---------------------------------------------------------
-
-        self.add_row_button.clicked.connect(
-            self.add_row
-        )
-
-        self.delete_row_button.clicked.connect(
-            self.delete_row
-        )
-
-        self.add_column_button.clicked.connect(
-            self.add_column
-        )
-
-        self.rename_column_button.clicked.connect(
-            self.rename_column
-        )
-
-        self.delete_column_button.clicked.connect(
-            self.delete_column
-        )
-
-        self.save_button.clicked.connect(
-            self.save_changes
-        )
+        # Buttons
+        self.add_row_button.clicked.connect(self.add_row)
+        self.delete_row_button.clicked.connect(self.delete_row)
+        self.add_column_button.clicked.connect(self.add_column)
+        self.rename_column_button.clicked.connect(self.rename_column)
+        self.delete_column_button.clicked.connect(self.delete_column)
+        self.save_button.clicked.connect(self.save_changes)
 
         # Sheet management
+        self.create_sheet_button.clicked.connect(self.create_sheet)
+        self.rename_sheet_button.clicked.connect(self.rename_sheet)
+        self.delete_sheet_button.clicked.connect(self.delete_sheet)
 
-        self.create_sheet_button.clicked.connect(
-            self.create_sheet
+        # Formatting controls
+        self.bold_button.clicked.connect(self.toggle_bold)
+        self.italic_button.clicked.connect(self.toggle_italic)
+        self.underline_button.clicked.connect(self.toggle_underline)
+        self.font_size_spin.valueChanged.connect(self.change_font_size)
+        self.font_color_button.clicked.connect(self.choose_font_color)
+        self.fill_color_button.clicked.connect(self.choose_fill_color)
+        self.left_align_button.clicked.connect(
+            lambda: self.apply_alignment("left")
         )
-
-        self.rename_sheet_button.clicked.connect(
-            self.rename_sheet
+        self.center_align_button.clicked.connect(
+            lambda: self.apply_alignment("center")
         )
-
-        self.delete_sheet_button.clicked.connect(
-            self.delete_sheet
+        self.right_align_button.clicked.connect(
+            lambda: self.apply_alignment("right")
         )
-
-        # Search
-
-        self.search_button.clicked.connect(
-            self.search_excel
+        self.top_align_button.clicked.connect(
+            lambda: self.apply_vertical_alignment("top")
         )
-
-        self.clear_search_button.clicked.connect(
-            self.clear_search
+        self.middle_align_button.clicked.connect(
+            lambda: self.apply_vertical_alignment("center")
         )
-
-        self.search_input.returnPressed.connect(
-            self.search_excel
+        self.bottom_align_button.clicked.connect(
+            lambda: self.apply_vertical_alignment("bottom")
         )
-
-        self.search_results_table.cellClicked.connect(
-            self.select_search_result
+        self.number_format_combo.currentTextChanged.connect(
+            self.change_number_format
         )
+        self.table_format_button.clicked.connect(self.apply_table_format)
+        self.clear_format_button.clicked.connect(self.clear_format)
+        self.format_cells_button.clicked.connect(self.open_format_cells_dialog)
 
     # =========================================================
-    # UI Setup
+    # UI
     # =========================================================
 
     def setup_ui(self):
         main_layout = QVBoxLayout()
-
-        main_layout.setContentsMargins(
-            20,
-            20,
-            20,
-            20,
-        )
-
-        main_layout.setSpacing(12)
-
-        # =====================================================
-        # Header
-        # =====================================================
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
 
         header_layout = QHBoxLayout()
 
         title = QLabel(
             f"Excel Editor - {self.filename}"
         )
-
         title.setStyleSheet(
             """
             QLabel {
@@ -165,61 +167,19 @@ class ExcelEditorWindow(QWidget):
         header_layout.addWidget(title)
         header_layout.addStretch()
 
-        # =====================================================
-        # Sheet selector
-        # =====================================================
-
-        sheet_label = QLabel("Sheet:")
+        header_layout.addWidget(QLabel("Sheet:"))
 
         self.sheet_combo = QComboBox()
-
-        self.sheet_combo.setMinimumWidth(
-            180
-        )
-
+        self.sheet_combo.setMinimumWidth(180)
         self.sheet_combo.currentTextChanged.connect(
             self.load_sheet
         )
+        header_layout.addWidget(self.sheet_combo)
 
-        header_layout.addWidget(
-            sheet_label
-        )
-
-        header_layout.addWidget(
-            self.sheet_combo
-        )
-
-        # =====================================================
-        # New Sheet
-        # =====================================================
-
-        self.create_sheet_button = QPushButton(
-            "New Sheet"
-        )
-
-        # =====================================================
-        # Rename Sheet
-        # =====================================================
-
-        self.rename_sheet_button = QPushButton(
-            "Rename Sheet"
-        )
-
-        # =====================================================
-        # Delete Sheet
-        # =====================================================
-
-        self.delete_sheet_button = QPushButton(
-            "Delete Sheet"
-        )
-
-        # =====================================================
-        # Refresh
-        # =====================================================
-
-        self.refresh_button = QPushButton(
-            "Refresh"
-        )
+        self.create_sheet_button = QPushButton("New Sheet")
+        self.rename_sheet_button = QPushButton("Rename Sheet")
+        self.delete_sheet_button = QPushButton("Delete Sheet")
+        self.refresh_button = QPushButton("Refresh")
 
         for button in (
             self.create_sheet_button,
@@ -229,120 +189,210 @@ class ExcelEditorWindow(QWidget):
         ):
             button.setMinimumHeight(38)
 
-        header_layout.addWidget(
-            self.create_sheet_button
-        )
-
-        header_layout.addWidget(
-            self.rename_sheet_button
-        )
-
-        header_layout.addWidget(
-            self.delete_sheet_button
-        )
+        header_layout.addWidget(self.create_sheet_button)
+        header_layout.addWidget(self.rename_sheet_button)
+        header_layout.addWidget(self.delete_sheet_button)
+        header_layout.addWidget(self.refresh_button)
 
         self.refresh_button.clicked.connect(
             self.load_excel_file
         )
 
-        header_layout.addWidget(
-            self.refresh_button
-        )
-
-        main_layout.addLayout(
-            header_layout
-        )
+        main_layout.addLayout(header_layout)
 
         # =====================================================
-        # Search Area
+        # Search
         # =====================================================
 
         search_layout = QHBoxLayout()
 
-        search_label = QLabel(
-            "Search:"
-        )
+        search_layout.addWidget(QLabel("Search:"))
 
         self.search_input = QLineEdit()
-
         self.search_input.setPlaceholderText(
-            "Search in current sheet..."
+            "Search in the selected sheet..."
+        )
+        self.search_input.setMinimumHeight(36)
+
+        self.search_button = QPushButton("Search")
+        self.clear_search_button = QPushButton("Clear")
+
+        self.search_button.setMinimumHeight(36)
+        self.clear_search_button.setMinimumHeight(36)
+
+        self.search_result_label = QLabel(
+            "No search performed."
         )
 
-        self.search_button = QPushButton(
-            "Search"
-        )
+        search_layout.addWidget(self.search_input, 1)
+        search_layout.addWidget(self.search_button)
+        search_layout.addWidget(self.clear_search_button)
+        search_layout.addWidget(self.search_result_label)
 
-        self.clear_search_button = QPushButton(
-            "Clear"
-        )
-
-        self.search_status_label = QLabel()
-
-        self.search_status_label.setMinimumWidth(
-            100
-        )
-
-        search_layout.addWidget(
-            search_label
-        )
-
-        search_layout.addWidget(
-            self.search_input
-        )
-
-        search_layout.addWidget(
-            self.search_button
-        )
-
-        search_layout.addWidget(
-            self.clear_search_button
-        )
-
-        search_layout.addWidget(
-            self.search_status_label
-        )
-
-        main_layout.addLayout(
-            search_layout
-        )
+        main_layout.addLayout(search_layout)
 
         # =====================================================
-        # Search Results Table
+        # Search Results
         # =====================================================
 
-        self.search_results_table = QTableWidget()
+        self.search_results_list = QListWidget()
+        self.search_results_list.setMaximumHeight(120)
+        self.search_results_list.setVisible(False)
 
-        self.search_results_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-
-        self.search_results_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-
-        self.search_results_table.setSelectionMode(
-            QTableWidget.SelectionMode.SingleSelection
-        )
-
-        self.search_results_table.setAlternatingRowColors(
-            True
-        )
-
-        self.search_results_table.setMaximumHeight(
-            230
-        )
-
-        self.search_results_table.horizontalHeader().setStretchLastSection(
-            True
-        )
-
-        main_layout.addWidget(
-            self.search_results_table
-        )
+        main_layout.addWidget(self.search_results_list)
 
         # =====================================================
-        # Main Excel Table
+        # Formatting Toolbar
+        # =====================================================
+
+        formatting_group = QGroupBox("Formatting")
+        formatting_layout = QVBoxLayout()
+        formatting_layout.setContentsMargins(10, 8, 10, 8)
+        formatting_layout.setSpacing(8)
+
+        # Row 1 - Font
+        font_row = QHBoxLayout()
+        font_row.setSpacing(6)
+
+        self.bold_button = QPushButton("B")
+        self.bold_button.setToolTip("Bold")
+        self.bold_button.setCheckable(True)
+
+        self.italic_button = QPushButton("I")
+        self.italic_button.setToolTip("Italic")
+        self.italic_button.setCheckable(True)
+
+        self.underline_button = QPushButton("U")
+        self.underline_button.setToolTip(
+            "Underline. Click repeatedly for single/double/none."
+        )
+        self.underline_button.setCheckable(True)
+
+        for button in (
+            self.bold_button,
+            self.italic_button,
+            self.underline_button,
+        ):
+            button.setMinimumSize(38, 34)
+
+        font_row.addWidget(self.bold_button)
+        font_row.addWidget(self.italic_button)
+        font_row.addWidget(self.underline_button)
+
+        font_row.addWidget(QLabel("Font Size:"))
+
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(1, 72)
+        self.font_size_spin.setValue(11)
+        self.font_size_spin.setMinimumWidth(75)
+        self.font_size_spin.setToolTip("Font size")
+
+        font_row.addWidget(self.font_size_spin)
+
+        font_row.addWidget(QLabel("Font Color:"))
+
+        self.font_color_button = QPushButton("■")
+        self.font_color_button.setMinimumSize(55, 34)
+        self.font_color_button.setToolTip("Choose font color")
+        self.set_color_button(self.font_color_button, "000000")
+
+        font_row.addWidget(self.font_color_button)
+
+        font_row.addWidget(QLabel("Fill Color:"))
+
+        self.fill_color_button = QPushButton("■")
+        self.fill_color_button.setMinimumSize(55, 34)
+        self.fill_color_button.setToolTip("Choose fill color")
+        self.set_color_button(self.fill_color_button, "FFFFFF")
+
+        font_row.addWidget(self.fill_color_button)
+
+        font_row.addStretch()
+
+        formatting_layout.addLayout(font_row)
+
+        # Row 2 - Alignment and number format
+        format_row = QHBoxLayout()
+        format_row.setSpacing(6)
+
+        format_row.addWidget(QLabel("Alignment:"))
+
+        self.left_align_button = QPushButton("Left")
+        self.center_align_button = QPushButton("Center")
+        self.right_align_button = QPushButton("Right")
+        self.top_align_button = QPushButton("Top")
+        self.middle_align_button = QPushButton("Middle")
+        self.bottom_align_button = QPushButton("Bottom")
+
+        for button in (
+            self.left_align_button,
+            self.center_align_button,
+            self.right_align_button,
+            self.top_align_button,
+            self.middle_align_button,
+            self.bottom_align_button,
+        ):
+            button.setMinimumHeight(34)
+
+        format_row.addWidget(self.left_align_button)
+        format_row.addWidget(self.center_align_button)
+        format_row.addWidget(self.right_align_button)
+        format_row.addSpacing(8)
+        format_row.addWidget(self.top_align_button)
+        format_row.addWidget(self.middle_align_button)
+        format_row.addWidget(self.bottom_align_button)
+
+        format_row.addSpacing(12)
+        format_row.addWidget(QLabel("Number Format:"))
+
+        self.number_format_combo = QComboBox()
+        self.number_format_combo.addItems(
+            [
+                "General",
+                "Number",
+                "Currency",
+                "Accounting",
+                "Short Date",
+                "Long Date",
+                "Time",
+                "Percentage",
+                "Fraction",
+                "Scientific",
+                "Text",
+            ]
+        )
+        self.number_format_combo.setMinimumWidth(150)
+        self.number_format_combo.setMinimumHeight(34)
+
+        format_row.addWidget(self.number_format_combo)
+        format_row.addStretch()
+
+        formatting_layout.addLayout(format_row)
+
+        # Row 3 - Presets / advanced formatting
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+
+        self.table_format_button = QPushButton("▦  Table Format")
+        self.clear_format_button = QPushButton("🧹  Clear Format")
+        self.format_cells_button = QPushButton("▦  Format Cells...")
+
+        self.table_format_button.setMinimumHeight(36)
+        self.clear_format_button.setMinimumHeight(36)
+        self.format_cells_button.setMinimumHeight(36)
+
+        action_row.addWidget(self.table_format_button)
+        action_row.addWidget(self.clear_format_button)
+        action_row.addStretch()
+        action_row.addWidget(self.format_cells_button)
+
+        formatting_layout.addLayout(action_row)
+
+        formatting_group.setLayout(formatting_layout)
+        main_layout.addWidget(formatting_group)
+
+        # =====================================================
+        # Table
         # =====================================================
 
         self.table = QTableWidget()
@@ -352,59 +402,50 @@ class ExcelEditorWindow(QWidget):
             | QTableWidget.EditTrigger.EditKeyPressed
         )
 
-        self.table.setAlternatingRowColors(
-            True
-        )
+        self.table.setAlternatingRowColors(True)
 
         self.table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectItems
         )
 
-        self.table.setSelectionMode(
-            QTableWidget.SelectionMode.SingleSelection
-        )
-
         self.table.cellChanged.connect(
             self.handle_cell_changed
+        )
+        self.table.itemSelectionChanged.connect(
+            self.update_format_controls_from_selection
         )
 
         self.table.horizontalHeader().setStretchLastSection(
             True
         )
 
-        main_layout.addWidget(
-            self.table
+        self.search_button.clicked.connect(
+            self.search_excel
+        )
+        self.clear_search_button.clicked.connect(
+            self.clear_search
+        )
+        self.search_input.returnPressed.connect(
+            self.search_excel
+        )
+        self.search_results_list.itemClicked.connect(
+            self.go_to_search_result
         )
 
+        main_layout.addWidget(self.table)
+
         # =====================================================
-        # Bottom Buttons
+        # Bottom buttons
         # =====================================================
 
         bottom_layout = QHBoxLayout()
 
-        self.add_row_button = QPushButton(
-            "Add Row"
-        )
-
-        self.delete_row_button = QPushButton(
-            "Delete Row"
-        )
-
-        self.add_column_button = QPushButton(
-            "Add Column"
-        )
-
-        self.rename_column_button = QPushButton(
-            "Rename Column"
-        )
-
-        self.delete_column_button = QPushButton(
-            "Delete Column"
-        )
-
-        self.save_button = QPushButton(
-            "Save"
-        )
+        self.add_row_button = QPushButton("Add Row")
+        self.delete_row_button = QPushButton("Delete Row")
+        self.add_column_button = QPushButton("Add Column")
+        self.rename_column_button = QPushButton("Rename Column")
+        self.delete_column_button = QPushButton("Delete Column")
+        self.save_button = QPushButton("Save")
 
         for button in (
             self.add_row_button,
@@ -414,146 +455,122 @@ class ExcelEditorWindow(QWidget):
             self.delete_column_button,
             self.save_button,
         ):
-            button.setMinimumHeight(
-                40
+            button.setMinimumHeight(40)
+
+        bottom_layout.addWidget(self.add_row_button)
+        bottom_layout.addWidget(self.delete_row_button)
+        bottom_layout.addWidget(self.add_column_button)
+        bottom_layout.addWidget(self.rename_column_button)
+        bottom_layout.addWidget(self.delete_column_button)
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(self.save_button)
+
+        main_layout.addLayout(bottom_layout)
+
+        self.setLayout(main_layout)
+
+    # =========================================================
+    # Helpers
+    # =========================================================
+
+    @staticmethod
+    def column_letter(column_number: int) -> str:
+        result = ""
+
+        while column_number > 0:
+            column_number, remainder = divmod(
+                column_number - 1,
+                26,
+            )
+            result = (
+                chr(65 + remainder)
+                + result
             )
 
-        bottom_layout.addWidget(
-            self.add_row_button
-        )
-
-        bottom_layout.addWidget(
-            self.delete_row_button
-        )
-
-        bottom_layout.addWidget(
-            self.add_column_button
-        )
-
-        bottom_layout.addWidget(
-            self.rename_column_button
-        )
-
-        bottom_layout.addWidget(
-            self.delete_column_button
-        )
-
-        bottom_layout.addStretch()
-
-        bottom_layout.addWidget(
-            self.save_button
-        )
-
-        main_layout.addLayout(
-            bottom_layout
-        )
-
-        self.setLayout(
-            main_layout
-        )
-
-    # =========================================================
-    # Helper - Selected Sheet
-    # =========================================================
+        return result
 
     def selected_sheet(self) -> str:
         return self.sheet_combo.currentText().strip()
 
+    def set_busy(self, button, text: str, busy: bool):
+        button.setEnabled(not busy)
+        button.setText(text if busy else button.property("normal_text"))
+
+    def clear_pending_for_sheet(self, sheet_name: str):
+        self.pending_changes = {
+            key: value
+            for key, value in self.pending_changes.items()
+            if key[0] != sheet_name
+        }
+
+    def rebuild_sheet_combo(
+        self,
+        selected_sheet: str | None = None,
+    ):
+        if not self.workbook:
+            return
+
+        names = self.workbook.sheetnames
+
+        self.sheet_combo.blockSignals(True)
+        try:
+            self.sheet_combo.clear()
+            self.sheet_combo.addItems(names)
+
+            if selected_sheet in names:
+                self.sheet_combo.setCurrentText(selected_sheet)
+            elif names:
+                self.sheet_combo.setCurrentIndex(0)
+        finally:
+            self.sheet_combo.blockSignals(False)
+
     # =========================================================
-    # Load Excel File
+    # Download + Load Workbook
     # =========================================================
 
     def load_excel_file(self):
         try:
-            self.refresh_button.setEnabled(
-                False
-            )
-
-            self.refresh_button.setText(
-                "Loading..."
-            )
+            self.refresh_button.setEnabled(False)
+            self.refresh_button.setText("Loading...")
 
             self.pending_changes.clear()
 
-            # -------------------------------------------------
-            # Clear search
-            # -------------------------------------------------
-
-            self.clear_search_results_only()
-
-            # -------------------------------------------------
-            # Remove previous temp file
-            # -------------------------------------------------
-
             if self.temp_file_path:
                 try:
-                    os.remove(
-                        self.temp_file_path
-                    )
+                    os.remove(self.temp_file_path)
                 except OSError:
                     pass
 
-            # -------------------------------------------------
-            # Create temporary file
-            # -------------------------------------------------
-
-            fd, self.temp_file_path = (
-                tempfile.mkstemp(
-                    suffix=".xlsx"
-                )
+            fd, self.temp_file_path = tempfile.mkstemp(
+                suffix=".xlsx"
             )
-
             os.close(fd)
-
-            # -------------------------------------------------
-            # Download latest Excel file
-            # -------------------------------------------------
 
             self.api_client.download_file(
                 file_id=self.file_id,
                 save_path=self.temp_file_path,
             )
 
-            # -------------------------------------------------
-            # Load workbook
-            # -------------------------------------------------
-
             self.workbook = load_workbook(
                 self.temp_file_path
             )
 
-            # -------------------------------------------------
-            # Update sheet selector
-            # -------------------------------------------------
+            current_sheet = self.selected_sheet()
 
-            self.sheet_combo.blockSignals(
-                True
+            self.rebuild_sheet_combo(
+                current_sheet
+                if current_sheet in self.workbook.sheetnames
+                else None
             )
 
-            try:
-                self.sheet_combo.clear()
-
-                self.sheet_combo.addItems(
-                    self.workbook.sheetnames
-                )
-
-            finally:
-                self.sheet_combo.blockSignals(
-                    False
-                )
-
-            # -------------------------------------------------
-            # Load first sheet
-            # -------------------------------------------------
-
             if self.workbook.sheetnames:
-                self.sheet_combo.setCurrentIndex(
-                    0
-                )
-
                 self.load_sheet(
-                    self.workbook.sheetnames[0]
+                    self.sheet_combo.currentText()
                 )
+            else:
+                self.table.clear()
+                self.table.setRowCount(0)
+                self.table.setColumnCount(0)
 
         except Exception as exc:
             QMessageBox.critical(
@@ -563,152 +580,77 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.refresh_button.setEnabled(
-                True
-            )
-
-            self.refresh_button.setText(
-                "Refresh"
-            )
+            self.refresh_button.setEnabled(True)
+            self.refresh_button.setText("Refresh")
 
     # =========================================================
     # Load Sheet
     # =========================================================
 
-    def load_sheet(
-        self,
-        sheet_name: str,
-    ):
-        if not self.workbook:
+    def load_sheet(self, sheet_name: str):
+        if not self.workbook or not sheet_name:
             return
 
-        if not sheet_name:
+        if sheet_name not in self.workbook.sheetnames:
             return
-
-        self.clear_search_results_only()
 
         self._loading_table = True
-
-        self.table.blockSignals(
-            True
-        )
+        self.table.blockSignals(True)
+        self.clear_search()
 
         try:
-            worksheet = self.workbook[
-                sheet_name
-            ]
+            worksheet = self.workbook[sheet_name]
 
             max_row = worksheet.max_row
             max_column = worksheet.max_column
 
-            # -------------------------------------------------
-            # Completely empty worksheet
-            # -------------------------------------------------
+            # A newly created completely empty sheet has
+            # max_row/max_column equal to 1 in some openpyxl
+            # situations. We still show one editable cell.
+            if max_row < 1:
+                max_row = 1
 
-            if (
-                max_row == 1
-                and max_column == 1
-                and worksheet["A1"].value is None
-            ):
-                self.table.clear()
-
-                self.table.setRowCount(
-                    0
-                )
-
-                self.table.setColumnCount(
-                    0
-                )
-
-                return
-
-            # -------------------------------------------------
-            # First row = headers
-            # -------------------------------------------------
-
-            header_row = 1
-            data_start_row = 2
-
-            data_row_count = max(
-                0,
-                max_row - 1,
-            )
+            if max_column < 1:
+                max_column = 1
 
             self.table.clear()
+            self.table.setRowCount(max_row)
+            self.table.setColumnCount(max_column)
 
-            self.table.setRowCount(
-                data_row_count
-            )
+            headers = [
+                self.column_letter(index + 1)
+                for index in range(max_column)
+            ]
 
-            self.table.setColumnCount(
-                max_column
-            )
+            self.table.setHorizontalHeaderLabels(headers)
 
-            # -------------------------------------------------
-            # Headers
-            # -------------------------------------------------
+            for row_index in range(max_row):
+                excel_row = row_index + 1
 
-            headers = []
+                for column_index in range(max_column):
+                    excel_column = column_index + 1
 
-            for column_number in range(
-                1,
-                max_column + 1,
-            ):
-                header_value = worksheet.cell(
-                    row=header_row,
-                    column=column_number,
-                ).value
-
-                if header_value is None:
-                    header_value = (
-                        self.column_letter(
-                            column_number
-                        )
-                    )
-                else:
-                    header_value = str(
-                        header_value
-                    )
-
-                headers.append(
-                    header_value
-                )
-
-            self.table.setHorizontalHeaderLabels(
-                headers
-            )
-
-            # -------------------------------------------------
-            # Data
-            # -------------------------------------------------
-
-            for table_row in range(
-                data_row_count
-            ):
-                excel_row = (
-                    data_start_row
-                    + table_row
-                )
-
-                for column_number in range(
-                    1,
-                    max_column + 1,
-                ):
                     value = worksheet.cell(
                         row=excel_row,
-                        column=column_number,
+                        column=excel_column,
                     ).value
 
-                    if value is None:
-                        value = ""
+                    text = "" if value is None else str(value)
 
-                    item = QTableWidgetItem(
-                        str(value)
+                    item = QTableWidgetItem(text)
+
+                    # Restore workbook formatting in the desktop preview.
+                    self.apply_openpyxl_style_to_item(
+                        item,
+                        worksheet.cell(
+                            row=excel_row,
+                            column=excel_column,
+                        ),
                     )
 
                     self.table.setItem(
-                        table_row,
-                        column_number - 1,
+                        row_index,
+                        column_index,
                         item,
                     )
 
@@ -722,114 +664,95 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.table.blockSignals(
-                False
-            )
-
+            self.table.blockSignals(False)
             self._loading_table = False
 
     # =========================================================
-    # Search Excel
+    # Excel Search
     # =========================================================
 
     def search_excel(self):
-        if self._searching:
-            return
-
-        search_term = (
-            self.search_input.text().strip()
-        )
-
-        if not search_term:
-            QMessageBox.warning(
-                self,
-                "Search",
-                "Please enter something to search.",
-            )
-
-            return
-
         sheet_name = self.selected_sheet()
+        search_term = self.search_input.text().strip()
 
         if not sheet_name:
             QMessageBox.warning(
                 self,
-                "Search",
+                "Search Excel",
                 "Please select a sheet first.",
             )
-
             return
 
-        if not self.workbook:
+        if not search_term:
             QMessageBox.warning(
                 self,
-                "Search",
-                "Workbook is not loaded.",
+                "Search Excel",
+                "Please enter a search term.",
             )
-
             return
 
-        self._searching = True
-
-        self.search_button.setEnabled(
-            False
-        )
-
-        self.search_button.setText(
-            "Searching..."
-        )
-
-        self.search_status_label.setText(
-            ""
-        )
-
-        self.clear_search_results_only()
+        self.search_button.setEnabled(False)
+        self.search_button.setText("Searching...")
 
         try:
-            # -------------------------------------------------
-            # Call existing API client search method
-            # -------------------------------------------------
-
-            response = (
-                self.api_client.search_excel(
-                    file_id=self.file_id,
-                    sheet_name=sheet_name,
-                    search_term=search_term,
-                )
+            result = self.api_client.search_excel(
+                file_id=self.file_id,
+                sheet_name=sheet_name,
+                search_term=search_term,
             )
 
-            results = response.get(
-                "results",
-                [],
-            )
+            results = result.get("results", [])
+            self.search_results = results
 
-            # -------------------------------------------------
-            # No results
-            # -------------------------------------------------
+            self.search_results_list.clear()
 
             if not results:
-                self.search_status_label.setText(
-                    "No results"
+                self.search_results_list.setVisible(False)
+                self.search_result_label.setText(
+                    "0 results"
                 )
 
+                QMessageBox.information(
+                    self,
+                    "Search Excel",
+                    (
+                        f"No matches found for "
+                        f"'{search_term}'."
+                    ),
+                )
                 return
 
-            # -------------------------------------------------
-            # Build complete rows
-            # -------------------------------------------------
+            for index, match in enumerate(results):
+                cell = match.get("cell", "")
+                value = match.get("value", "")
+                text = (
+                    f"{cell}  |  "
+                    f"{value}"
+                )
 
-            self.populate_search_results(
-                results=results,
-                search_term=search_term,
-                sheet_name=sheet_name,
+                item = QListWidgetItem(text)
+                item.setData(
+                    0x0100,
+                    index,
+                )
+
+                self.search_results_list.addItem(item)
+
+            self.search_results_list.setVisible(True)
+            self.search_result_label.setText(
+                f"{len(results)} result(s)"
             )
 
-            self.search_status_label.setText(
-                f"{len(results)} match(es)"
+            # Automatically select the first result.
+            self.go_to_search_result(
+                self.search_results_list.item(0)
             )
 
         except Exception as exc:
-            self.search_status_label.setText(
+            self.search_results = []
+            self.search_results_list.clear()
+            self.search_results_list.setVisible(False)
+            self.search_result_label.setText(
                 "Search failed."
             )
 
@@ -840,411 +763,1123 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self._searching = False
+            self.search_button.setEnabled(True)
+            self.search_button.setText("Search")
 
-            self.search_button.setEnabled(
-                True
-            )
-
-            self.search_button.setText(
-                "Search"
-            )
-
-    # =========================================================
-    # Populate Search Results
-    # =========================================================
-
-    def populate_search_results(
+    def go_to_search_result(
         self,
-        results: list[dict],
-        search_term: str,
-        sheet_name: str,
+        item: QListWidgetItem | None,
     ):
-        if not self.workbook:
+        if item is None:
             return
 
-        worksheet = self.workbook[
-            sheet_name
-        ]
+        index = item.data(0x0100)
 
-        max_column = worksheet.max_column
+        if index is None:
+            return
 
-        # -----------------------------------------------------
-        # Headers
-        # -----------------------------------------------------
+        try:
+            index = int(index)
+            result = self.search_results[index]
+        except (IndexError, TypeError, ValueError):
+            return
 
-        headers = []
+        cell = result.get("cell")
 
-        for column_number in range(
-            1,
-            max_column + 1,
-        ):
-            header_value = worksheet.cell(
-                row=1,
-                column=column_number,
-            ).value
+        if not cell:
+            return
 
-            if header_value is None:
-                header_value = (
-                    self.column_letter(
-                        column_number
-                    )
-                )
+        row_number = result.get("row_number")
+        column_number = result.get("column_number")
+
+        # Prefer the explicit row/column returned by the backend.
+        try:
+            if row_number is not None and column_number is not None:
+                row = int(row_number) - 1
+                column = int(column_number) - 1
             else:
-                header_value = str(
-                    header_value
-                )
-
-            headers.append(
-                header_value
-            )
-
-        # -----------------------------------------------------
-        # Group matches by row
-        # -----------------------------------------------------
-
-        rows = {}
-
-        for result in results:
-            row_number = result.get(
-                "row_number"
-            )
-
-            column_number = result.get(
-                "column_number"
-            )
-
-            cell = result.get(
-                "cell",
-                "",
-            )
-
-            if row_number is None:
-                continue
-
-            if row_number not in rows:
-                rows[row_number] = {
-                    "matched_columns": set(),
-                    "matched_cells": [],
-                }
-
-            if column_number is not None:
-                rows[row_number][
-                    "matched_columns"
-                ].add(
-                    column_number
-                )
-
-            if cell:
-                rows[row_number][
-                    "matched_cells"
-                ].append(cell)
-
-        sorted_rows = sorted(
-            rows.items(),
-            key=lambda item: item[0],
-        )
-
-        # -----------------------------------------------------
-        # Search result columns
-        #
-        # Row | Excel Columns... | Matched Cell
-        # -----------------------------------------------------
-
-        result_headers = [
-            "Row"
-        ]
-
-        result_headers.extend(
-            headers
-        )
-
-        result_headers.append(
-            "Matched Cell"
-        )
-
-        self.search_results_table.setColumnCount(
-            len(result_headers)
-        )
-
-        self.search_results_table.setHorizontalHeaderLabels(
-            result_headers
-        )
-
-        self.search_results_table.setRowCount(
-            len(sorted_rows)
-        )
-
-        # -----------------------------------------------------
-        # Fill result rows
-        # -----------------------------------------------------
-
-        for result_index, (
-            excel_row,
-            match_info,
-        ) in enumerate(
-            sorted_rows
-        ):
-            # -------------------------------------------------
-            # Row number
-            # -------------------------------------------------
-            record_number = excel_row - 1
-
-            row_item = QTableWidgetItem(
-                str(record_number)
-            )
-
-            row_item.setData(
-                Qt.ItemDataRole.UserRole,
-                excel_row,
-            )
-
-            self.search_results_table.setItem(
-                result_index,
-                0,
-                row_item,
-            )
-
-            # -------------------------------------------------
-            # Complete Excel row
-            # -------------------------------------------------
-
-            for column_number in range(
-                1,
-                max_column + 1,
-            ):
-                value = worksheet.cell(
-                    row=excel_row,
-                    column=column_number,
-                ).value
-
-                if value is None:
-                    value = ""
-
-                item = QTableWidgetItem(
-                    str(value)
-                )
-
-                # -------------------------------------------------
-                # Highlight matching column
-                # -------------------------------------------------
-
-                if (
-                    column_number
-                    in match_info[
-                        "matched_columns"
-                    ]
-                ):
-                    item.setBackground(
-                        QColor(
-                            255,
-                            235,
-                            150,
-                        )
-                    )
-
-                    item.setToolTip(
-                        "Matching value"
-                    )
-
-                self.search_results_table.setItem(
-                    result_index,
-                    column_number,
-                    item,
-                )
-
-            # -------------------------------------------------
-            # Matched cells
-            # -------------------------------------------------
-
-            matched_cells = ", ".join(
-                match_info[
-                    "matched_cells"
-                ]
-            )
-
-            matched_item = QTableWidgetItem(
-                matched_cells
-            )
-
-            self.search_results_table.setItem(
-                result_index,
-                max_column + 1,
-                matched_item,
-            )
-
-        # -----------------------------------------------------
-        # Resize
-        # -----------------------------------------------------
-
-        self.search_results_table.resizeColumnsToContents()
-
-        # Keep the table usable if there are many columns.
-        self.search_results_table.horizontalHeader().setStretchLastSection(
-            False
-        )
-
-    # =========================================================
-    # Select Search Result
-    # =========================================================
-
-    def select_search_result(
-        self,
-        result_row: int,
-        result_column: int,
-    ):
-        if not self.workbook:
+                row, column = self.cell_to_indexes(cell)
+        except (TypeError, ValueError):
             return
 
+        if (
+            row < 0
+            or column < 0
+            or row >= self.table.rowCount()
+            or column >= self.table.columnCount()
+        ):
+            return
+
+        self.table.setCurrentCell(row, column)
+        self.table.scrollToItem(
+            self.table.item(row, column)
+        )
+        self.table.setFocus()
+
+    @staticmethod
+    def cell_to_indexes(cell: str) -> tuple[int, int]:
+        letters = ""
+        digits = ""
+
+        for char in cell.upper():
+            if char.isalpha():
+                letters += char
+            elif char.isdigit():
+                digits += char
+
+        if not letters or not digits:
+            raise ValueError(
+                f"Invalid cell reference: {cell}"
+            )
+
+        column_number = 0
+
+        for char in letters:
+            column_number = (
+                column_number * 26
+                + ord(char)
+                - ord("A")
+                + 1
+            )
+
+        row_number = int(digits)
+
+        return row_number - 1, column_number - 1
+
+    def clear_search(self):
+        self.search_input.clear()
+        self.search_results.clear()
+        self.search_results_list.clear()
+        self.search_results_list.setVisible(False)
+        self.search_result_label.setText(
+            "No search performed."
+        )
+
+    # =========================================================
+    # Formatting Helpers
+    # =========================================================
+
+    @staticmethod
+    def normalize_color(color: str | None) -> str | None:
+        if not color:
+            return None
+
+        value = str(color).strip().replace("#", "").upper()
+
+        # openpyxl may return ARGB (8 characters).
+        if len(value) == 8:
+            value = value[-6:]
+
+        if len(value) != 6:
+            return None
+
+        try:
+            int(value, 16)
+        except ValueError:
+            return None
+
+        return value
+
+    @staticmethod
+    def set_color_button(button: QPushButton, color: str):
+        color = color.replace("#", "").upper()
+        button.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: #{color};
+                border: 1px solid #999999;
+                border-radius: 4px;
+                font-size: 18px;
+            }}
+            QPushButton:hover {{
+                border: 2px solid #333333;
+            }}
+            """
+        )
+        button.setProperty("color_hex", color)
+
+    def selected_range(self) -> str | None:
+        ranges = self.table.selectedRanges()
+
+        if not ranges:
+            return None
+
+        selection = ranges[0]
+
+        start = (
+            self.column_letter(selection.leftColumn() + 1)
+            + str(selection.topRow() + 1)
+        )
+
+        end = (
+            self.column_letter(selection.rightColumn() + 1)
+            + str(selection.bottomRow() + 1)
+        )
+
+        return start if start == end else f"{start}:{end}"
+
+    def selected_cells(self):
+        ranges = self.table.selectedRanges()
+
+        if not ranges:
+            return []
+
+        selection = ranges[0]
+
+        cells = []
+
+        for row in range(
+            selection.topRow(),
+            selection.bottomRow() + 1,
+        ):
+            for column in range(
+                selection.leftColumn(),
+                selection.rightColumn() + 1,
+            ):
+                cell = (
+                    self.column_letter(column + 1)
+                    + str(row + 1)
+                )
+                cells.append(cell)
+
+        return cells
+
+    def format_request(
+        self,
+        *,
+        bold=None,
+        italic=None,
+        underline=None,
+        font_size=None,
+        font_color=None,
+        fill_color=None,
+        horizontal_alignment=None,
+        vertical_alignment=None,
+        number_format=None,
+    ):
+        sheet_name = self.selected_sheet()
+        cell_range = self.selected_range()
+
+        if not sheet_name:
+            QMessageBox.warning(
+                self,
+                "Formatting",
+                "Please select a sheet first.",
+            )
+            return False
+
+        if not cell_range:
+            QMessageBox.warning(
+                self,
+                "Formatting",
+                "Please select one or more cells first.",
+            )
+            return False
+
+        if self.pending_changes:
+            QMessageBox.warning(
+                self,
+                "Formatting",
+                (
+                    "Please save your cell changes before "
+                    "applying formatting."
+                ),
+            )
+            return False
+
+        selected_cells = self.selected_cells()
+
+        if not selected_cells:
+            QMessageBox.warning(
+                self,
+                "Formatting",
+                "Please select one or more cells first.",
+            )
+            return False
+
+        try:
+            # -----------------------------------------------------
+            # IMPORTANT: update the local preview FIRST.
+            # This makes the formatting visible immediately in the
+            # QTableWidget instead of waiting for the API response.
+            # -----------------------------------------------------
+            self.apply_local_format(
+                sheet_name=sheet_name,
+                cells=selected_cells,
+                bold=bold,
+                italic=italic,
+                underline=underline,
+                font_size=font_size,
+                font_color=font_color,
+                fill_color=fill_color,
+                horizontal_alignment=horizontal_alignment,
+                vertical_alignment=vertical_alignment,
+                number_format=number_format,
+            )
+
+            # Force Qt to paint the changed cells before the synchronous
+            # HTTP request starts. Without this, the UI may appear to
+            # change only after the API request finishes.
+            QApplication.processEvents()
+
+            # -----------------------------------------------------
+            # Persist the same formatting in the backend.
+            # -----------------------------------------------------
+            self.api_client.format_excel_range(
+                file_id=self.file_id,
+                sheet_name=sheet_name,
+                cell_range=cell_range,
+                bold=bold,
+                italic=italic,
+                underline=underline,
+                font_size=font_size,
+                font_color=font_color,
+                fill_color=fill_color,
+                horizontal_alignment=horizontal_alignment,
+                vertical_alignment=vertical_alignment,
+                number_format=number_format,
+            )
+
+            self.refresh_format_controls()
+            return True
+
+        except Exception as exc:
+            # The local preview was already changed. If the backend
+            # failed, reload the workbook so the UI returns to the
+            # server's actual state. Formatting is blocked while there
+            # are pending cell edits, so this is safe here.
+            try:
+                self.load_excel_file()
+            except Exception:
+                pass
+
+            QMessageBox.critical(
+                self,
+                "Formatting Failed",
+                str(exc),
+            )
+            return False
+
+    def apply_local_format(
+        self,
+        *,
+        sheet_name,
+        cells,
+        bold=None,
+        italic=None,
+        underline=None,
+        font_size=None,
+        font_color=None,
+        fill_color=None,
+        horizontal_alignment=None,
+        vertical_alignment=None,
+        number_format=None,
+    ):
+        worksheet = self.workbook[sheet_name]
+
+        for cell in cells:
+            ws_cell = worksheet[cell]
+
+            if bold is not None:
+                font = copy(ws_cell.font)
+                font.bold = bold
+                ws_cell.font = font
+
+            if italic is not None:
+                font = copy(ws_cell.font)
+                font.italic = italic
+                ws_cell.font = font
+
+            if underline is not None:
+                font = copy(ws_cell.font)
+                font.underline = underline
+                ws_cell.font = font
+
+            if font_size is not None:
+                font = copy(ws_cell.font)
+                font.sz = font_size
+                ws_cell.font = font
+
+            normalized_font = self.normalize_color(font_color)
+            if normalized_font:
+                font = copy(ws_cell.font)
+                font.color = normalized_font
+                ws_cell.font = font
+
+            normalized_fill = self.normalize_color(fill_color)
+            if normalized_fill:
+                from openpyxl.styles import PatternFill
+
+                ws_cell.fill = PatternFill(
+                    fill_type="solid",
+                    fgColor=normalized_fill,
+                )
+
+            if horizontal_alignment is not None:
+                alignment = copy(ws_cell.alignment)
+                alignment.horizontal = horizontal_alignment
+                ws_cell.alignment = alignment
+
+            if vertical_alignment is not None:
+                alignment = copy(ws_cell.alignment)
+                alignment.vertical = vertical_alignment
+                ws_cell.alignment = alignment
+
+            if number_format is not None:
+                ws_cell.number_format = number_format
+
+            row = ws_cell.row - 1
+            column = ws_cell.column - 1
+
+            item = self.table.item(row, column)
+            if item is not None:
+                self.apply_openpyxl_style_to_item(
+                    item,
+                    ws_cell,
+                )
+
+    @staticmethod
+    def apply_openpyxl_style_to_item(item, ws_cell):
+        font = ws_cell.font
+        alignment = ws_cell.alignment
+        fill = ws_cell.fill
+
+        qfont = QFont()
+        qfont.setBold(bool(font.bold))
+        qfont.setItalic(bool(font.italic))
+        qfont.setPointSize(
+            max(1, int(font.sz or 11))
+        )
+
+        if font.underline in {
+            "single",
+            "singleAccounting",
+        }:
+            qfont.setUnderline(True)
+            qfont.setStrikeOut(False)
+        elif font.underline in {
+            "double",
+            "doubleAccounting",
+        }:
+            qfont.setUnderline(True)
+            qfont.setStrikeOut(False)
+
+        item.setFont(qfont)
+
+        if font.color and font.color.type == "rgb":
+            rgb = font.color.rgb
+            if rgb:
+                normalized = str(rgb)[-6:]
+                item.setForeground(
+                    QColor(f"#{normalized}")
+                )
+
+        if fill.fill_type == "solid":
+            fg = fill.fgColor
+            if fg.type == "rgb" and fg.rgb:
+                normalized = str(fg.rgb)[-6:]
+                item.setBackground(
+                    QColor(f"#{normalized}")
+                )
+
+        alignment_map = {
+            "left": Qt.AlignmentFlag.AlignLeft,
+            "center": Qt.AlignmentFlag.AlignHCenter,
+            "right": Qt.AlignmentFlag.AlignRight,
+        }
+
+        vertical_map = {
+            "top": Qt.AlignmentFlag.AlignTop,
+            "center": Qt.AlignmentFlag.AlignVCenter,
+            "bottom": Qt.AlignmentFlag.AlignBottom,
+        }
+
+        horizontal_flag = alignment_map.get(
+            alignment.horizontal,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+        vertical_flag = vertical_map.get(
+            alignment.vertical,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        qt_alignment = horizontal_flag | vertical_flag
+
+        item.setTextAlignment(qt_alignment)
+
+    def refresh_format_controls(self):
+        self.table.blockSignals(True)
+        try:
+            self.update_format_controls_from_selection()
+        finally:
+            self.table.blockSignals(False)
+
+    def update_format_controls_from_selection(self):
+        ranges = self.table.selectedRanges()
+
+        if not ranges or not self.workbook:
+            return
+
+        selection = ranges[0]
         sheet_name = self.selected_sheet()
 
         if not sheet_name:
             return
 
-        # -----------------------------------------------------
-        # Excel row number stored in first column
-        # -----------------------------------------------------
+        worksheet = self.workbook[sheet_name]
+        cell = worksheet.cell(
+            row=selection.topRow() + 1,
+            column=selection.leftColumn() + 1,
+        )
 
-        row_item = (
-            self.search_results_table.item(
-                result_row,
-                0,
+        self.bold_button.blockSignals(True)
+        self.italic_button.blockSignals(True)
+        self.underline_button.blockSignals(True)
+        self.font_size_spin.blockSignals(True)
+        self.number_format_combo.blockSignals(True)
+
+        try:
+            self.bold_button.setChecked(
+                bool(cell.font.bold)
             )
-        )
-
-        if not row_item:
-            return
-
-        excel_row = row_item.data(
-            Qt.ItemDataRole.UserRole
-        )
-
-        if excel_row is None:
-            try:
-                excel_row = int(
-                    row_item.text()
-                )
-            except ValueError:
-                return
-
-        # -----------------------------------------------------
-        # Matched cell column
-        # -----------------------------------------------------
-
-        matched_column_index = (
-            self.search_results_table.columnCount()
-            - 1
-        )
-
-        matched_item = (
-            self.search_results_table.item(
-                result_row,
-                matched_column_index,
-            )
-        )
-
-        target_cell = None
-
-        if matched_item:
-            matched_text = (
-                matched_item.text()
+            self.italic_button.setChecked(
+                bool(cell.font.italic)
             )
 
-            if matched_text:
-                target_cell = (
-                    matched_text.split(
-                        ","
-                    )[0].strip()
+            underline = cell.font.underline
+            self.underline_style = underline
+
+            self.underline_button.setChecked(
+                underline is not None
+            )
+
+            self.font_size_spin.setValue(
+                max(1, int(cell.font.sz or 11))
+            )
+
+            format_name = self.number_format_to_name(
+                cell.number_format
+            )
+
+            index = self.number_format_combo.findText(
+                format_name
+            )
+
+            if index >= 0:
+                self.number_format_combo.setCurrentIndex(
+                    index
                 )
 
-        # -----------------------------------------------------
-        # Select target in main Excel table
-        # -----------------------------------------------------
-
-        table_row = (
-            excel_row - 2
-        )
-
-        if table_row < 0:
-            return
-
-        if (
-            table_row
-            >= self.table.rowCount()
-        ):
-            return
-
-        table_column = 0
-
-        if target_cell:
-            match = re.match(
-                r"^([A-Za-z]+)(\d+)$",
-                target_cell,
-            )
-
-            if match:
-                letters = match.group(
-                    1
+            if (
+                cell.font.color
+                and cell.font.color.type == "rgb"
+                and cell.font.color.rgb
+            ):
+                self.set_color_button(
+                    self.font_color_button,
+                    str(cell.font.color.rgb)[-6:],
                 )
 
-                table_column = (
-                    self.column_number(
-                        letters
+            if (
+                cell.fill.fill_type == "solid"
+                and cell.fill.fgColor.type == "rgb"
+                and cell.fill.fgColor.rgb
+            ):
+                self.set_color_button(
+                    self.fill_color_button,
+                    str(cell.fill.fgColor.rgb)[-6:],
+                )
+
+        finally:
+            self.bold_button.blockSignals(False)
+            self.italic_button.blockSignals(False)
+            self.underline_button.blockSignals(False)
+            self.font_size_spin.blockSignals(False)
+            self.number_format_combo.blockSignals(False)
+
+    @staticmethod
+    def number_format_to_name(number_format: str) -> str:
+        if number_format in {
+            "General",
+            "@",
+        }:
+            return (
+                "General"
+                if number_format == "General"
+                else "Text"
+            )
+
+        mapping = {
+            "0": "Number",
+            "0.00": "Number",
+            "#,##0": "Number",
+            "#,##0.00": "Number",
+            '$#,##0.00': "Currency",
+            '$#,##0.00_);($#,##0.00)': "Currency",
+            '_-* #,##0.00\\ [$£-809]_-;\\-* #,##0.00\\ [$£-809]_-;_-* "-"??\\ [$£-809]_-;_-@_-': "Accounting",
+            "m/d/yy": "Short Date",
+            "mm/dd/yy": "Short Date",
+            "dd/mm/yy": "Short Date",
+            "dddd, mmmm d, yyyy": "Long Date",
+            "h:mm AM/PM": "Time",
+            "0%": "Percentage",
+            "0.00%": "Percentage",
+            "# ?/?": "Fraction",
+            "0.00E+00": "Scientific",
+        }
+
+        return mapping.get(number_format, "General")
+
+    def toggle_bold(self):
+        if self._loading_table:
+            return
+        self.format_request(
+            bold=self.bold_button.isChecked()
+        )
+
+    def toggle_italic(self):
+        if self._loading_table:
+            return
+        self.format_request(
+            italic=self.italic_button.isChecked()
+        )
+
+    def toggle_underline(self):
+        current = self.underline_style
+
+        if current is None:
+            new_style = "single"
+        elif current == "single":
+            new_style = "double"
+        else:
+            new_style = None
+
+        self.underline_style = new_style
+
+        success = self.format_request(
+            underline=new_style
+        )
+
+        if not success:
+            self.underline_style = current
+
+    def change_font_size(self, value: int):
+        if self._loading_table:
+            return
+        self.format_request(
+            font_size=float(value)
+        )
+
+    def choose_font_color(self):
+        current = self.font_color_button.property(
+            "color_hex"
+        ) or "000000"
+
+        color = QColorDialog.getColor(
+            QColor(f"#{current}"),
+            self,
+            "Choose Font Color",
+        )
+
+        if not color.isValid():
+            return
+
+        value = color.name().replace("#", "").upper()
+
+        if self.format_request(font_color=value):
+            self.set_color_button(
+                self.font_color_button,
+                value,
+            )
+
+    def choose_fill_color(self):
+        current = self.fill_color_button.property(
+            "color_hex"
+        ) or "FFFFFF"
+
+        color = QColorDialog.getColor(
+            QColor(f"#{current}"),
+            self,
+            "Choose Fill Color",
+        )
+
+        if not color.isValid():
+            return
+
+        value = color.name().replace("#", "").upper()
+
+        if self.format_request(fill_color=value):
+            self.set_color_button(
+                self.fill_color_button,
+                value,
+            )
+
+    def apply_alignment(self, alignment: str):
+        self.format_request(
+            horizontal_alignment=alignment
+        )
+
+    def apply_vertical_alignment(self, alignment: str):
+        self.format_request(
+            vertical_alignment=alignment
+        )
+
+    def change_number_format(self, format_name: str):
+        if self._loading_table:
+            return
+
+        formats = {
+            "General": "General",
+            "Number": "0.00",
+            "Currency": '$#,##0.00',
+            "Accounting": '_-* #,##0.00\\ [$£-809]_-;\\-* #,##0.00\\ [$£-809]_-;_-* "-"??\\ [$£-809]_-;_-@_-',
+            "Short Date": "mm/dd/yy",
+            "Long Date": "dddd, mmmm d, yyyy",
+            "Time": "h:mm AM/PM",
+            "Percentage": "0.00%",
+            "Fraction": "# ?/?",
+            "Scientific": "0.00E+00",
+            "Text": "@",
+        }
+
+        number_format = formats.get(format_name)
+
+        if number_format is None:
+            return
+
+        self.format_request(
+            number_format=number_format
+        )
+
+    def apply_table_format(self):
+        sheet_name = self.selected_sheet()
+        cell_range = self.selected_range()
+
+        if not sheet_name or not cell_range:
+            QMessageBox.warning(
+                self,
+                "Table Format",
+                "Please select a range first.",
+            )
+            return
+
+        if self.pending_changes:
+            QMessageBox.warning(
+                self,
+                "Table Format",
+                (
+                    "Please save your cell changes before "
+                    "applying formatting."
+                ),
+            )
+            return
+
+        ranges = self.table.selectedRanges()
+        selection = ranges[0]
+
+        start_row = selection.topRow() + 1
+        end_row = selection.bottomRow() + 1
+        start_column = selection.leftColumn() + 1
+        end_column = selection.rightColumn() + 1
+
+        header_start = (
+            self.column_letter(start_column)
+            + str(start_row)
+        )
+        header_end = (
+            self.column_letter(end_column)
+            + str(start_row)
+        )
+        header_range = (
+            header_start
+            if header_start == header_end
+            else f"{header_start}:{header_end}"
+        )
+
+        try:
+            # The current backend has a generic format endpoint,
+            # not a dedicated Excel Table endpoint. Therefore this
+            # preset creates a practical table-like appearance by
+            # formatting the header and data area.
+            self.api_client.format_excel_range(
+                file_id=self.file_id,
+                sheet_name=sheet_name,
+                cell_range=header_range,
+                bold=True,
+                italic=False,
+                underline=None,
+                font_size=11,
+                font_color="FFFFFF",
+                fill_color="4472C4",
+                horizontal_alignment="center",
+                vertical_alignment="center",
+                number_format=None,
+            )
+
+            body_start = (
+                self.column_letter(start_column)
+                + str(start_row + 1)
+            )
+            body_end = (
+                self.column_letter(end_column)
+                + str(end_row)
+            )
+
+            if start_row < end_row:
+                body_range = f"{body_start}:{body_end}"
+
+                self.api_client.format_excel_range(
+                    file_id=self.file_id,
+                    sheet_name=sheet_name,
+                    cell_range=body_range,
+                    bold=False,
+                    italic=False,
+                    underline=None,
+                    font_size=11,
+                    font_color="000000",
+                    fill_color="FFFFFF",
+                    horizontal_alignment="left",
+                    vertical_alignment="center",
+                    number_format=None,
+                )
+
+            # Update the local preview from the same style.
+            worksheet = self.workbook[sheet_name]
+
+            for column in range(
+                start_column,
+                end_column + 1,
+            ):
+                cell = worksheet.cell(
+                    row=start_row,
+                    column=column,
+                )
+                font = copy(cell.font)
+                font.bold = True
+                font.color = "FFFFFF"
+                font.sz = 11
+                cell.font = font
+                from openpyxl.styles import PatternFill
+                cell.fill = PatternFill(
+                    fill_type="solid",
+                    fgColor="4472C4",
+                )
+                alignment = copy(cell.alignment)
+                alignment.horizontal = "center"
+                alignment.vertical = "center"
+                cell.alignment = alignment
+                self.apply_openpyxl_style_to_item(
+                    self.table.item(
+                        start_row - 1,
+                        column - 1,
+                    ),
+                    cell,
+                )
+
+            for row in range(
+                start_row + 1,
+                end_row + 1,
+            ):
+                for column in range(
+                    start_column,
+                    end_column + 1,
+                ):
+                    cell = worksheet.cell(
+                        row=row,
+                        column=column,
                     )
-                    - 1
-                )
+                    font = copy(cell.font)
+                    font.bold = False
+                    font.italic = False
+                    font.color = "000000"
+                    font.sz = 11
+                    cell.font = font
+                    cell.fill = PatternFill(
+                        fill_type="solid",
+                        fgColor="FFFFFF",
+                    )
+                    alignment = copy(cell.alignment)
+                    alignment.horizontal = "left"
+                    alignment.vertical = "center"
+                    cell.alignment = alignment
+                    self.apply_openpyxl_style_to_item(
+                        self.table.item(
+                            row - 1,
+                            column - 1,
+                        ),
+                        cell,
+                    )
 
-        if (
-            table_column < 0
-            or table_column
-            >= self.table.columnCount()
-        ):
-            table_column = 0
+            QMessageBox.information(
+                self,
+                "Table Format",
+                "Table formatting applied successfully.",
+            )
 
-        self.table.setCurrentCell(
-            table_row,
-            table_column,
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Table Format Failed",
+                str(exc),
+            )
+
+    def clear_format(self):
+        if not self.selected_range():
+            QMessageBox.warning(
+                self,
+                "Clear Format",
+                "Please select one or more cells first.",
+            )
+            return
+
+        if self.pending_changes:
+            QMessageBox.warning(
+                self,
+                "Clear Format",
+                (
+                    "Please save your cell changes before "
+                    "clearing formatting."
+                ),
+            )
+            return
+
+        # Reset using the generic backend formatting endpoint.
+        # The backend does not expose a separate clear-format API,
+        # so we explicitly reset the supported properties.
+        success = self.format_request(
+            bold=False,
+            italic=False,
+            underline=None,
+            font_size=11,
+            font_color="000000",
+            fill_color="FFFFFF",
+            horizontal_alignment="left",
+            vertical_alignment="center",
+            number_format="General",
         )
 
-        self.table.scrollToItem(
-            self.table.item(
-                table_row,
-                table_column,
+        if success:
+            self.underline_style = None
+
+    def open_format_cells_dialog(self):
+        if not self.selected_range():
+            QMessageBox.warning(
+                self,
+                "Format Cells",
+                "Please select one or more cells first.",
+            )
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Format Cells")
+        dialog.setMinimumSize(560, 420)
+
+        tabs = QTabWidget()
+
+        # Font tab
+        font_tab = QWidget()
+        font_form = QFormLayout()
+
+        font_size = QSpinBox()
+        font_size.setRange(1, 72)
+        font_size.setValue(self.font_size_spin.value())
+
+        font_bold = QPushButton("Bold")
+        font_bold.setCheckable(True)
+        font_bold.setChecked(
+            self.bold_button.isChecked()
+        )
+
+        font_italic = QPushButton("Italic")
+        font_italic.setCheckable(True)
+        font_italic.setChecked(
+            self.italic_button.isChecked()
+        )
+
+        font_underline = QComboBox()
+        font_underline.addItems(
+            [
+                "None",
+                "single",
+                "double",
+                "singleAccounting",
+                "doubleAccounting",
+            ]
+        )
+
+        current_underline = self.underline_style
+        if current_underline:
+            index = font_underline.findText(
+                current_underline
+            )
+            if index >= 0:
+                font_underline.setCurrentIndex(index)
+
+        font_form.addRow("Font Size:", font_size)
+        font_form.addRow("Bold:", font_bold)
+        font_form.addRow("Italic:", font_italic)
+        font_form.addRow(
+            "Underline:",
+            font_underline,
+        )
+
+        font_tab.setLayout(font_form)
+        tabs.addTab(font_tab, "Font")
+
+        # Alignment tab
+        alignment_tab = QWidget()
+        alignment_form = QFormLayout()
+
+        horizontal = QComboBox()
+        horizontal.addItems(
+            ["left", "center", "right"]
+        )
+
+        vertical = QComboBox()
+        vertical.addItems(
+            ["top", "center", "bottom"]
+        )
+
+        alignment_form.addRow(
+            "Horizontal:",
+            horizontal,
+        )
+        alignment_form.addRow(
+            "Vertical:",
+            vertical,
+        )
+
+        alignment_tab.setLayout(alignment_form)
+        tabs.addTab(alignment_tab, "Alignment")
+
+        # Number tab
+        number_tab = QWidget()
+        number_form = QFormLayout()
+
+        number_combo = QComboBox()
+        number_combo.addItems(
+            [
+                "General",
+                "Number",
+                "Currency",
+                "Accounting",
+                "Short Date",
+                "Long Date",
+                "Time",
+                "Percentage",
+                "Fraction",
+                "Scientific",
+                "Text",
+            ]
+        )
+        number_combo.setCurrentText(
+            self.number_format_combo.currentText()
+        )
+
+        number_form.addRow(
+            "Category:",
+            number_combo,
+        )
+
+        number_tab.setLayout(number_form)
+        tabs.addTab(number_tab, "Number")
+
+        # Fill tab
+        fill_tab = QWidget()
+        fill_form = QFormLayout()
+
+        fill_button = QPushButton("Choose Fill Color")
+        fill_button.clicked.connect(
+            lambda: self.choose_dialog_color(
+                fill_button
             )
         )
 
-    # =========================================================
-    # Clear Search Results Only
-    # =========================================================
-
-    def clear_search_results_only(self):
-        self.search_results_table.clear()
-
-        self.search_results_table.setRowCount(
-            0
+        fill_form.addRow(
+            "Fill:",
+            fill_button,
         )
 
-        self.search_results_table.setColumnCount(
-            0
+        fill_tab.setLayout(fill_form)
+        tabs.addTab(fill_tab, "Fill")
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
         )
 
-        self.search_status_label.setText(
-            ""
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        layout = QVBoxLayout()
+        layout.addWidget(tabs)
+        layout.addWidget(buttons)
+        dialog.setLayout(layout)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        underline_value = font_underline.currentText()
+        if underline_value == "None":
+            underline_value = None
+
+        formats = {
+            "General": "General",
+            "Number": "0.00",
+            "Currency": '$#,##0.00',
+            "Accounting": '_-* #,##0.00\\ [$£-809]_-;\\-* #,##0.00\\ [$£-809]_-;_-* "-"??\\ [$£-809]_-;_-@_-',
+            "Short Date": "mm/dd/yy",
+            "Long Date": "dddd, mmmm d, yyyy",
+            "Time": "h:mm AM/PM",
+            "Percentage": "0.00%",
+            "Fraction": "# ?/?",
+            "Scientific": "0.00E+00",
+            "Text": "@",
+        }
+
+        success = self.format_request(
+            bold=font_bold.isChecked(),
+            italic=font_italic.isChecked(),
+            underline=underline_value,
+            font_size=float(font_size.value()),
+            horizontal_alignment=horizontal.currentText(),
+            vertical_alignment=vertical.currentText(),
+            number_format=formats[
+                number_combo.currentText()
+            ],
         )
 
+        if success:
+            self.underline_style = underline_value
+
+    def choose_dialog_color(self, button: QPushButton):
+        color = QColorDialog.getColor(
+            QColor("#FFFFFF"),
+            self,
+            "Choose Fill Color",
+        )
+
+        if color.isValid():
+            value = color.name().replace(
+                "#", ""
+            ).upper()
+
+            button.setText(
+                f"#{value}"
+            )
+            button.setProperty(
+                "color_hex",
+                value,
+            )
+
+            # Apply immediately.
+            self.format_request(
+                fill_color=value
+            )
+
     # =========================================================
-    # Clear Search
-    # =========================================================
-
-    def clear_search(self):
-        self.search_input.clear()
-
-        self.clear_search_results_only()
-
-        self.search_input.setFocus()
-
-    # =========================================================
-    # Cell Changed
+    # Cell Editing
     # =========================================================
 
     def handle_cell_changed(
@@ -1263,47 +1898,22 @@ class ExcelEditorWindow(QWidget):
         if not sheet_name:
             return
 
-        item = self.table.item(
-            row,
-            column,
-        )
+        item = self.table.item(row, column)
 
-        if item is None:
-            value = None
-        else:
-            value = item.text()
-
-        # -----------------------------------------------------
-        # Table row 0 = Excel row 2
-        # -----------------------------------------------------
-
-        excel_row = row + 2
+        value = None if item is None else item.text()
 
         cell = (
-            self.column_letter(
-                column + 1
-            )
-            + str(excel_row)
+            self.column_letter(column + 1)
+            + str(row + 1)
         )
 
         self.pending_changes[
-            (
-                sheet_name,
-                cell,
-            )
+            (sheet_name, cell)
         ] = value
 
-        # -----------------------------------------------------
-        # Update local workbook
-        # -----------------------------------------------------
-
         try:
-            worksheet = self.workbook[
-                sheet_name
-            ]
-
+            worksheet = self.workbook[sheet_name]
             worksheet[cell] = value
-
         except Exception as exc:
             QMessageBox.critical(
                 self,
@@ -1312,7 +1922,7 @@ class ExcelEditorWindow(QWidget):
             )
 
     # =========================================================
-    # Save Changes
+    # Save Cell Changes
     # =========================================================
 
     def save_changes(self):
@@ -1322,20 +1932,14 @@ class ExcelEditorWindow(QWidget):
                 "Save",
                 "There are no changes to save.",
             )
-
             return
 
-        self.save_button.setEnabled(
-            False
-        )
-
-        self.save_button.setText(
-            "Saving..."
-        )
-
-        successful_changes = []
+        self.save_button.setEnabled(False)
+        self.save_button.setText("Saving...")
 
         try:
+            successful_changes = []
+
             for (
                 sheet_name,
                 cell,
@@ -1350,15 +1954,12 @@ class ExcelEditorWindow(QWidget):
                 )
 
                 successful_changes.append(
-                    (
-                        sheet_name,
-                        cell,
-                    )
+                    (sheet_name, cell)
                 )
 
-            for key in successful_changes:
+            for change in successful_changes:
                 self.pending_changes.pop(
-                    key,
+                    change,
                     None,
                 )
 
@@ -1367,10 +1968,6 @@ class ExcelEditorWindow(QWidget):
                 "Save Successful",
                 "Changes saved successfully.",
             )
-
-            # Refresh search results if active.
-            if self.search_input.text().strip():
-                self.search_excel()
 
         except Exception as exc:
             QMessageBox.critical(
@@ -1383,13 +1980,8 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.save_button.setEnabled(
-                True
-            )
-
-            self.save_button.setText(
-                "Save"
-            )
+            self.save_button.setEnabled(True)
+            self.save_button.setText("Save")
 
     # =========================================================
     # Add Row
@@ -1404,10 +1996,6 @@ class ExcelEditorWindow(QWidget):
                 "Add Row",
                 "Please select a sheet first.",
             )
-
-            return
-
-        if not self.workbook:
             return
 
         column_count = max(
@@ -1416,66 +2004,44 @@ class ExcelEditorWindow(QWidget):
         )
 
         # IMPORTANT:
-        # Empty strings make this a real row in
-        # openpyxl and prevent max_row collapsing.
-        row_data = [
-            ""
-        ] * column_count
+        # Use empty strings instead of a list containing only None.
+        # This makes the blank row a real row in openpyxl and prevents
+        # max_row from collapsing back to the previous row.
+        row_data = [""] * column_count
 
-        self.add_row_button.setEnabled(
-            False
-        )
-
-        self.add_row_button.setText(
-            "Adding..."
-        )
+        self.add_row_button.setEnabled(False)
+        self.add_row_button.setText("Adding...")
 
         try:
-            # -------------------------------------------------
-            # Add row in backend
-            # -------------------------------------------------
-
             result = self.api_client.add_row(
                 file_id=self.file_id,
                 sheet_name=sheet_name,
                 row_data=row_data,
             )
 
-            backend_row_number = result.get(
-                "row_number"
-            )
+            # The backend returns the actual Excel row number.
+            # Use it instead of assuming table.rowCount() is the
+            # correct Excel row.
+            backend_row_number = result.get("row_number")
 
             if backend_row_number is None:
                 backend_row_number = (
-                    self.table.rowCount()
-                    + 2
+                    self.table.rowCount() + 1
                 )
 
-            # -------------------------------------------------
-            # Update local workbook
-            # -------------------------------------------------
+            # Update local workbook first.
+            worksheet = self.workbook[sheet_name]
 
-            worksheet = self.workbook[
-                sheet_name
-            ]
+            # The backend has already added the row. The local
+            # workbook is only a UI-side copy, so append one row.
+            worksheet.append(row_data)
 
-            worksheet.append(
-                row_data
-            )
+            # If openpyxl's calculated row differs from the backend
+            # row, explicitly write the cells at the backend row.
+            # This keeps the local workbook aligned with the server.
+            local_row_number = worksheet.max_row
 
-            # -------------------------------------------------
-            # Make sure local workbook row
-            # matches backend row
-            # -------------------------------------------------
-
-            local_row_number = (
-                worksheet.max_row
-            )
-
-            if (
-                local_row_number
-                != backend_row_number
-            ):
+            if local_row_number != backend_row_number:
                 for column_number, value in enumerate(
                     row_data,
                     start=1,
@@ -1486,60 +2052,31 @@ class ExcelEditorWindow(QWidget):
                         value=value,
                     )
 
-            # -------------------------------------------------
-            # Update UI
-            # -------------------------------------------------
-
+            # Update the table without triggering cellChanged.
             self._loading_table = True
-
-            self.table.blockSignals(
-                True
-            )
+            self.table.blockSignals(True)
 
             try:
-                target_row = (
-                    backend_row_number
-                    - 2
-                )
+                target_row = backend_row_number - 1
 
-                while (
-                    self.table.rowCount()
-                    <= target_row
-                ):
+                while self.table.rowCount() <= target_row:
                     self.table.insertRow(
                         self.table.rowCount()
                     )
 
-                for column in range(
-                    column_count
-                ):
+                for column in range(column_count):
                     self.table.setItem(
                         target_row,
                         column,
-                        QTableWidgetItem(
-                            ""
-                        ),
+                        QTableWidgetItem(""),
                     )
 
             finally:
-                self.table.blockSignals(
-                    False
-                )
-
+                self.table.blockSignals(False)
                 self._loading_table = False
 
             self.table.resizeColumnsToContents()
-
-            self.table.setCurrentCell(
-                target_row,
-                0,
-            )
-
             self.table.scrollToBottom()
-
-            # Refresh search result if needed.
-            if self.search_input.text().strip():
-                self.search_excel()
 
             QMessageBox.information(
                 self,
@@ -1558,22 +2095,15 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.add_row_button.setEnabled(
-                True
-            )
-
-            self.add_row_button.setText(
-                "Add Row"
-            )
+            self.add_row_button.setEnabled(True)
+            self.add_row_button.setText("Add Row")
 
     # =========================================================
     # Delete Row
     # =========================================================
 
     def delete_row(self):
-        current_row = (
-            self.table.currentRow()
-        )
+        current_row = self.table.currentRow()
 
         if current_row < 0:
             QMessageBox.warning(
@@ -1581,44 +2111,39 @@ class ExcelEditorWindow(QWidget):
                 "Delete Row",
                 "Please select a row to delete.",
             )
-
             return
 
         sheet_name = self.selected_sheet()
 
         if not sheet_name:
+            QMessageBox.warning(
+                self,
+                "Delete Row",
+                "Please select a sheet first.",
+            )
             return
 
-        # Table row 0 = Excel row 2
-        row_number = (
-            current_row + 2
-        )
+        # QTableWidget is 0-based.
+        # Excel/openpyxl is 1-based.
+        row_number = current_row + 1
 
         answer = QMessageBox.question(
             self,
             "Delete Row",
             (
-                f"Are you sure you want to "
-                f"delete Excel row {row_number}?"
+                f"Are you sure you want to delete "
+                f"row {row_number}?"
             ),
             QMessageBox.StandardButton.Yes
             | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
 
-        if (
-            answer
-            != QMessageBox.StandardButton.Yes
-        ):
+        if answer != QMessageBox.StandardButton.Yes:
             return
 
-        self.delete_row_button.setEnabled(
-            False
-        )
-
-        self.delete_row_button.setText(
-            "Deleting..."
-        )
+        self.delete_row_button.setEnabled(False)
+        self.delete_row_button.setText("Deleting...")
 
         try:
             result = self.api_client.delete_row(
@@ -1627,58 +2152,30 @@ class ExcelEditorWindow(QWidget):
                 row_number=row_number,
             )
 
-            # -------------------------------------------------
-            # Update local workbook
-            # -------------------------------------------------
+            # Backend succeeded. Now update the local workbook/table.
+            worksheet = self.workbook[sheet_name]
 
-            if self.workbook:
-                worksheet = self.workbook[
-                    sheet_name
-                ]
+            worksheet.delete_rows(
+                row_number,
+                1,
+            )
 
-                worksheet.delete_rows(
-                    row_number,
-                    1,
-                )
+            self._loading_table = True
+            self.table.blockSignals(True)
 
-            # -------------------------------------------------
-            # Remove pending changes for
-            # deleted row and shift rows below
-            # -------------------------------------------------
+            try:
+                self.table.removeRow(current_row)
+            finally:
+                self.table.blockSignals(False)
+                self._loading_table = False
 
+            # Row deletion changes Excel coordinates for all rows below
+            # the deleted row. Pending cell changes must therefore be
+            # rebuilt with shifted row numbers.
             self._shift_pending_changes_after_row_delete(
                 sheet_name,
                 row_number,
             )
-
-            # -------------------------------------------------
-            # Update UI
-            # -------------------------------------------------
-
-            self._loading_table = True
-
-            self.table.blockSignals(
-                True
-            )
-
-            try:
-                self.table.removeRow(
-                    current_row
-                )
-
-            finally:
-                self.table.blockSignals(
-                    False
-                )
-
-                self._loading_table = False
-
-            # -------------------------------------------------
-            # Refresh search results
-            # -------------------------------------------------
-
-            if self.search_input.text().strip():
-                self.search_excel()
 
             QMessageBox.information(
                 self,
@@ -1697,17 +2194,8 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.delete_row_button.setEnabled(
-                True
-            )
-
-            self.delete_row_button.setText(
-                "Delete Row"
-            )
-
-    # =========================================================
-    # Shift Pending Changes After Row Delete
-    # =========================================================
+            self.delete_row_button.setEnabled(True)
+            self.delete_row_button.setText("Delete Row")
 
     def _shift_pending_changes_after_row_delete(
         self,
@@ -1722,41 +2210,26 @@ class ExcelEditorWindow(QWidget):
         ), value in self.pending_changes.items():
 
             if change_sheet != sheet_name:
-                updated[
-                    (
-                        change_sheet,
-                        cell,
-                    )
-                ] = value
-
+                updated[(change_sheet, cell)] = value
                 continue
 
-            match = re.match(
-                r"^([A-Za-z]+)(\d+)$",
-                cell,
-            )
+            letters = ""
+            digits = ""
 
-            if not match:
-                updated[
-                    (
-                        change_sheet,
-                        cell,
-                    )
-                ] = value
+            for char in cell:
+                if char.isalpha():
+                    letters += char
+                elif char.isdigit():
+                    digits += char
 
+            if not digits:
+                updated[(change_sheet, cell)] = value
                 continue
 
-            letters = match.group(
-                1
-            )
-
-            row_number = int(
-                match.group(
-                    2
-                )
-            )
+            row_number = int(digits)
 
             if row_number == deleted_row:
+                # This pending change belonged to the deleted row.
                 continue
 
             if row_number > deleted_row:
@@ -1784,59 +2257,33 @@ class ExcelEditorWindow(QWidget):
                 "Add Column",
                 "Please select a sheet first.",
             )
-
             return
 
-        if not self.workbook:
-            return
+        column_number = self.table.columnCount() + 1
 
-        # Add column at the end.
-        column_number = (
-            self.table.columnCount()
-            + 1
-        )
-
-        self.add_column_button.setEnabled(
-            False
-        )
-
-        self.add_column_button.setText(
-            "Adding..."
-        )
+        self.add_column_button.setEnabled(False)
+        self.add_column_button.setText("Adding...")
 
         try:
-            # -------------------------------------------------
-            # Backend
-            # -------------------------------------------------
-
             result = self.api_client.add_column(
                 file_id=self.file_id,
                 sheet_name=sheet_name,
                 column_number=column_number,
             )
 
-            # -------------------------------------------------
-            # Local workbook
-            # -------------------------------------------------
+            worksheet = self.workbook[sheet_name]
 
-            worksheet = self.workbook[
-                sheet_name
-            ]
-
+            # Backend succeeded, so update local workbook.
             worksheet.insert_cols(
                 column_number,
                 1,
             )
 
-            # -------------------------------------------------
-            # UI
-            # -------------------------------------------------
-
+            # Update table directly. Do not reload the workbook from
+            # the server here, because that would cause the visible
+            # table to jump/reload.
             self._loading_table = True
-
-            self.table.blockSignals(
-                True
-            )
+            self.table.blockSignals(True)
 
             try:
                 self.table.insertColumn(
@@ -1846,9 +2293,7 @@ class ExcelEditorWindow(QWidget):
                 self.table.setHorizontalHeaderItem(
                     column_number - 1,
                     QTableWidgetItem(
-                        self.column_letter(
-                            column_number
-                        )
+                        self.column_letter(column_number)
                     ),
                 )
 
@@ -1858,21 +2303,12 @@ class ExcelEditorWindow(QWidget):
                     self.table.setItem(
                         row,
                         column_number - 1,
-                        QTableWidgetItem(
-                            ""
-                        ),
+                        QTableWidgetItem(""),
                     )
 
             finally:
-                self.table.blockSignals(
-                    False
-                )
-
+                self.table.blockSignals(False)
                 self._loading_table = False
-
-            # -------------------------------------------------
-            # Shift pending cell changes
-            # -------------------------------------------------
 
             self._shift_pending_changes_after_column_insert(
                 sheet_name,
@@ -1880,10 +2316,6 @@ class ExcelEditorWindow(QWidget):
             )
 
             self.table.resizeColumnsToContents()
-
-            # Refresh search results.
-            if self.search_input.text().strip():
-                self.search_excel()
 
             QMessageBox.information(
                 self,
@@ -1902,17 +2334,8 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.add_column_button.setEnabled(
-                True
-            )
-
-            self.add_column_button.setText(
-                "Add Column"
-            )
-
-    # =========================================================
-    # Shift Pending Changes After Column Insert
-    # =========================================================
+            self.add_column_button.setEnabled(True)
+            self.add_column_button.setText("Add Column")
 
     def _shift_pending_changes_after_column_insert(
         self,
@@ -1927,57 +2350,34 @@ class ExcelEditorWindow(QWidget):
         ), value in self.pending_changes.items():
 
             if change_sheet != sheet_name:
-                updated[
-                    (
-                        change_sheet,
-                        cell,
-                    )
-                ] = value
-
+                updated[(change_sheet, cell)] = value
                 continue
 
-            match = re.match(
-                r"^([A-Za-z]+)(\d+)$",
-                cell,
-            )
+            letters = ""
+            digits = ""
 
-            if not match:
-                updated[
-                    (
-                        change_sheet,
-                        cell,
-                    )
-                ] = value
+            for char in cell:
+                if char.isalpha():
+                    letters += char
+                elif char.isdigit():
+                    digits += char
 
+            if not letters or not digits:
+                updated[(change_sheet, cell)] = value
                 continue
 
-            letters = match.group(
-                1
-            )
-
-            row_number = match.group(
-                2
-            )
-
-            old_column = self.column_number(
-                letters
-            )
+            old_column = self.column_number(letters)
 
             if old_column >= inserted_column:
                 old_column += 1
 
             new_cell = (
-                self.column_letter(
-                    old_column
-                )
-                + row_number
+                self.column_letter(old_column)
+                + digits
             )
 
             updated[
-                (
-                    change_sheet,
-                    new_cell,
-                )
+                (change_sheet, new_cell)
             ] = value
 
         self.pending_changes = updated
@@ -1987,9 +2387,7 @@ class ExcelEditorWindow(QWidget):
     # =========================================================
 
     def rename_column(self):
-        current_column = (
-            self.table.currentColumn()
-        )
+        current_column = self.table.currentColumn()
 
         if current_column < 0:
             QMessageBox.warning(
@@ -1997,7 +2395,6 @@ class ExcelEditorWindow(QWidget):
                 "Rename Column",
                 "Please select a column first.",
             )
-
             return
 
         sheet_name = self.selected_sheet()
@@ -2005,20 +2402,11 @@ class ExcelEditorWindow(QWidget):
         if not sheet_name:
             return
 
-        column_number = (
-            current_column + 1
-        )
+        column_number = current_column + 1
+        column_letter = self.column_letter(column_number)
 
-        column_letter = (
-            self.column_letter(
-                column_number
-            )
-        )
-
-        header_item = (
-            self.table.horizontalHeaderItem(
-                current_column
-            )
+        header_item = self.table.horizontalHeaderItem(
+            current_column
         )
 
         current_name = (
@@ -2027,16 +2415,14 @@ class ExcelEditorWindow(QWidget):
             else column_letter
         )
 
-        new_name, ok = (
-            QInputDialog.getText(
-                self,
-                "Rename Column",
-                (
-                    f"Enter new name for "
-                    f"column {column_letter}:"
-                ),
-                text=current_name,
-            )
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Column",
+            (
+                f"Enter new name for "
+                f"column {column_letter}:"
+            ),
+            text=current_name,
         )
 
         if not ok:
@@ -2050,73 +2436,46 @@ class ExcelEditorWindow(QWidget):
                 "Rename Column",
                 "Column name cannot be empty.",
             )
-
             return
 
         if new_name == current_name:
+            QMessageBox.information(
+                self,
+                "Rename Column",
+                "The column name has not changed.",
+            )
             return
 
-        self.rename_column_button.setEnabled(
-            False
-        )
-
-        self.rename_column_button.setText(
-            "Renaming..."
-        )
+        self.rename_column_button.setEnabled(False)
+        self.rename_column_button.setText("Renaming...")
 
         try:
-            result = (
-                self.api_client.update_column(
-                    file_id=self.file_id,
-                    sheet_name=sheet_name,
-                    column_number=column_number,
-                    column_name=new_name,
-                )
+            result = self.api_client.update_column(
+                file_id=self.file_id,
+                sheet_name=sheet_name,
+                column_number=column_number,
+                column_name=new_name,
             )
 
-            # -------------------------------------------------
-            # UI
-            # -------------------------------------------------
+            worksheet = self.workbook[sheet_name]
+
+            worksheet.cell(
+                row=1,
+                column=column_number,
+                value=new_name,
+            )
 
             self._loading_table = True
-
-            self.table.blockSignals(
-                True
-            )
+            self.table.blockSignals(True)
 
             try:
                 self.table.setHorizontalHeaderItem(
                     current_column,
-                    QTableWidgetItem(
-                        new_name
-                    ),
+                    QTableWidgetItem(new_name),
                 )
-
             finally:
-                self.table.blockSignals(
-                    False
-                )
-
+                self.table.blockSignals(False)
                 self._loading_table = False
-
-            # -------------------------------------------------
-            # Local workbook
-            # -------------------------------------------------
-
-            if self.workbook:
-                worksheet = self.workbook[
-                    sheet_name
-                ]
-
-                worksheet.cell(
-                    row=1,
-                    column=column_number,
-                    value=new_name,
-                )
-
-            # Search result must reflect new header.
-            if self.search_input.text().strip():
-                self.search_excel()
 
             QMessageBox.information(
                 self,
@@ -2135,22 +2494,15 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.rename_column_button.setEnabled(
-                True
-            )
-
-            self.rename_column_button.setText(
-                "Rename Column"
-            )
+            self.rename_column_button.setEnabled(True)
+            self.rename_column_button.setText("Rename Column")
 
     # =========================================================
     # Delete Column
     # =========================================================
 
     def delete_column(self):
-        current_column = (
-            self.table.currentColumn()
-        )
+        current_column = self.table.currentColumn()
 
         if current_column < 0:
             QMessageBox.warning(
@@ -2158,7 +2510,6 @@ class ExcelEditorWindow(QWidget):
                 "Delete Column",
                 "Please select a column first.",
             )
-
             return
 
         sheet_name = self.selected_sheet()
@@ -2166,102 +2517,56 @@ class ExcelEditorWindow(QWidget):
         if not sheet_name:
             return
 
-        column_number = (
-            current_column + 1
-        )
-
-        column_letter = (
-            self.column_letter(
-                column_number
-            )
-        )
+        column_number = current_column + 1
+        column_letter = self.column_letter(column_number)
 
         answer = QMessageBox.question(
             self,
             "Delete Column",
             (
-                f"Are you sure you want to "
-                f"delete column {column_letter}?"
+                f"Are you sure you want to delete "
+                f"column {column_letter}?"
             ),
             QMessageBox.StandardButton.Yes
             | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
 
-        if (
-            answer
-            != QMessageBox.StandardButton.Yes
-        ):
+        if answer != QMessageBox.StandardButton.Yes:
             return
 
-        self.delete_column_button.setEnabled(
-            False
-        )
-
-        self.delete_column_button.setText(
-            "Deleting..."
-        )
+        self.delete_column_button.setEnabled(False)
+        self.delete_column_button.setText("Deleting...")
 
         try:
-            result = (
-                self.api_client.delete_column(
-                    file_id=self.file_id,
-                    sheet_name=sheet_name,
-                    column_number=column_number,
-                )
+            result = self.api_client.delete_column(
+                file_id=self.file_id,
+                sheet_name=sheet_name,
+                column_number=column_number,
             )
 
-            # -------------------------------------------------
-            # Local workbook
-            # -------------------------------------------------
+            worksheet = self.workbook[sheet_name]
 
-            if self.workbook:
-                worksheet = self.workbook[
-                    sheet_name
-                ]
-
-                worksheet.delete_cols(
-                    column_number,
-                    1,
-                )
-
-            # -------------------------------------------------
-            # UI
-            # -------------------------------------------------
+            worksheet.delete_cols(
+                column_number,
+                1,
+            )
 
             self._loading_table = True
-
-            self.table.blockSignals(
-                True
-            )
+            self.table.blockSignals(True)
 
             try:
                 self.table.removeColumn(
                     current_column
                 )
-
             finally:
-                self.table.blockSignals(
-                    False
-                )
-
+                self.table.blockSignals(False)
                 self._loading_table = False
-
-            # -------------------------------------------------
-            # Shift pending changes
-            # -------------------------------------------------
 
             self._shift_pending_changes_after_column_delete(
                 sheet_name,
                 column_number,
             )
-
-            # -------------------------------------------------
-            # Refresh search
-            # -------------------------------------------------
-
-            if self.search_input.text().strip():
-                self.search_excel()
 
             QMessageBox.information(
                 self,
@@ -2280,17 +2585,8 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.delete_column_button.setEnabled(
-                True
-            )
-
-            self.delete_column_button.setText(
-                "Delete Column"
-            )
-
-    # =========================================================
-    # Shift Pending Changes After Column Delete
-    # =========================================================
+            self.delete_column_button.setEnabled(True)
+            self.delete_column_button.setText("Delete Column")
 
     def _shift_pending_changes_after_column_delete(
         self,
@@ -2305,43 +2601,24 @@ class ExcelEditorWindow(QWidget):
         ), value in self.pending_changes.items():
 
             if change_sheet != sheet_name:
-                updated[
-                    (
-                        change_sheet,
-                        cell,
-                    )
-                ] = value
-
+                updated[(change_sheet, cell)] = value
                 continue
 
-            match = re.match(
-                r"^([A-Za-z]+)(\d+)$",
-                cell,
-            )
+            letters = ""
+            digits = ""
 
-            if not match:
-                updated[
-                    (
-                        change_sheet,
-                        cell,
-                    )
-                ] = value
+            for char in cell:
+                if char.isalpha():
+                    letters += char
+                elif char.isdigit():
+                    digits += char
 
+            if not letters or not digits:
+                updated[(change_sheet, cell)] = value
                 continue
 
-            letters = match.group(
-                1
-            )
+            old_column = self.column_number(letters)
 
-            row_number = match.group(
-                2
-            )
-
-            old_column = self.column_number(
-                letters
-            )
-
-            # Change belonged to deleted column.
             if old_column == deleted_column:
                 continue
 
@@ -2349,20 +2626,32 @@ class ExcelEditorWindow(QWidget):
                 old_column -= 1
 
             new_cell = (
-                self.column_letter(
-                    old_column
-                )
-                + row_number
+                self.column_letter(old_column)
+                + digits
             )
 
             updated[
-                (
-                    change_sheet,
-                    new_cell,
-                )
+                (change_sheet, new_cell)
             ] = value
 
         self.pending_changes = updated
+
+    @staticmethod
+    def column_number(column_letters: str) -> int:
+        result = 0
+
+        for char in column_letters.upper():
+            if not ("A" <= char <= "Z"):
+                continue
+
+            result = (
+                result * 26
+                + ord(char)
+                - ord("A")
+                + 1
+            )
+
+        return result
 
     # =========================================================
     # Create Sheet
@@ -2375,15 +2664,12 @@ class ExcelEditorWindow(QWidget):
                 "Create Sheet",
                 "Workbook is not loaded.",
             )
-
             return
 
-        sheet_name, ok = (
-            QInputDialog.getText(
-                self,
-                "Create Sheet",
-                "Enter new sheet name:",
-            )
+        sheet_name, ok = QInputDialog.getText(
+            self,
+            "Create Sheet",
+            "Enter new sheet name:",
         )
 
         if not ok:
@@ -2397,7 +2683,6 @@ class ExcelEditorWindow(QWidget):
                 "Create Sheet",
                 "Sheet name cannot be empty.",
             )
-
             return
 
         if sheet_name in self.workbook.sheetnames:
@@ -2409,58 +2694,21 @@ class ExcelEditorWindow(QWidget):
                     "already exists."
                 ),
             )
-
             return
 
-        self.create_sheet_button.setEnabled(
-            False
-        )
-
-        self.create_sheet_button.setText(
-            "Creating..."
-        )
+        self.create_sheet_button.setEnabled(False)
+        self.create_sheet_button.setText("Creating...")
 
         try:
-            result = (
-                self.api_client.create_sheet(
-                    file_id=self.file_id,
-                    sheet_name=sheet_name,
-                )
+            result = self.api_client.create_sheet(
+                file_id=self.file_id,
+                sheet_name=sheet_name,
             )
 
-            # -------------------------------------------------
-            # Local workbook
-            # -------------------------------------------------
+            self.workbook.create_sheet(sheet_name)
 
-            self.workbook.create_sheet(
-                sheet_name
-            )
-
-            # -------------------------------------------------
-            # Combo box
-            # -------------------------------------------------
-
-            self.sheet_combo.blockSignals(
-                True
-            )
-
-            try:
-                self.sheet_combo.addItem(
-                    sheet_name
-                )
-
-            finally:
-                self.sheet_combo.blockSignals(
-                    False
-                )
-
-            self.sheet_combo.setCurrentText(
-                sheet_name
-            )
-
-            self.load_sheet(
-                sheet_name
-            )
+            self.rebuild_sheet_combo(sheet_name)
+            self.load_sheet(sheet_name)
 
             QMessageBox.information(
                 self,
@@ -2479,13 +2727,8 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.create_sheet_button.setEnabled(
-                True
-            )
-
-            self.create_sheet_button.setText(
-                "New Sheet"
-            )
+            self.create_sheet_button.setEnabled(True)
+            self.create_sheet_button.setText("New Sheet")
 
     # =========================================================
     # Rename Sheet
@@ -2498,7 +2741,6 @@ class ExcelEditorWindow(QWidget):
                 "Rename Sheet",
                 "Workbook is not loaded.",
             )
-
             return
 
         current_sheet = self.selected_sheet()
@@ -2509,24 +2751,19 @@ class ExcelEditorWindow(QWidget):
                 "Rename Sheet",
                 "Please select a sheet first.",
             )
-
             return
 
-        new_sheet_name, ok = (
-            QInputDialog.getText(
-                self,
-                "Rename Sheet",
-                "Enter new sheet name:",
-                text=current_sheet,
-            )
+        new_sheet_name, ok = QInputDialog.getText(
+            self,
+            "Rename Sheet",
+            "Enter new sheet name:",
+            text=current_sheet,
         )
 
         if not ok:
             return
 
-        new_sheet_name = (
-            new_sheet_name.strip()
-        )
+        new_sheet_name = new_sheet_name.strip()
 
         if not new_sheet_name:
             QMessageBox.warning(
@@ -2534,16 +2771,17 @@ class ExcelEditorWindow(QWidget):
                 "Rename Sheet",
                 "Sheet name cannot be empty.",
             )
-
             return
 
         if new_sheet_name == current_sheet:
+            QMessageBox.information(
+                self,
+                "Rename Sheet",
+                "The sheet name has not changed.",
+            )
             return
 
-        if (
-            new_sheet_name
-            in self.workbook.sheetnames
-        ):
+        if new_sheet_name in self.workbook.sheetnames:
             QMessageBox.warning(
                 self,
                 "Rename Sheet",
@@ -2552,66 +2790,22 @@ class ExcelEditorWindow(QWidget):
                     "already exists."
                 ),
             )
-
             return
 
-        self.rename_sheet_button.setEnabled(
-            False
-        )
-
-        self.rename_sheet_button.setText(
-            "Renaming..."
-        )
+        self.rename_sheet_button.setEnabled(False)
+        self.rename_sheet_button.setText("Renaming...")
 
         try:
-            result = (
-                self.api_client.rename_sheet(
-                    file_id=self.file_id,
-                    sheet_name=current_sheet,
-                    new_sheet_name=new_sheet_name,
-                )
+            result = self.api_client.rename_sheet(
+                file_id=self.file_id,
+                sheet_name=current_sheet,
+                new_sheet_name=new_sheet_name,
             )
 
-            # -------------------------------------------------
-            # Local workbook
-            # -------------------------------------------------
+            worksheet = self.workbook[current_sheet]
+            worksheet.title = new_sheet_name
 
-            worksheet = self.workbook[
-                current_sheet
-            ]
-
-            worksheet.title = (
-                new_sheet_name
-            )
-
-            # -------------------------------------------------
-            # Update combo
-            # -------------------------------------------------
-
-            self.sheet_combo.blockSignals(
-                True
-            )
-
-            try:
-                current_index = (
-                    self.sheet_combo.currentIndex()
-                )
-
-                self.sheet_combo.setItemText(
-                    current_index,
-                    new_sheet_name,
-                )
-
-            finally:
-                self.sheet_combo.blockSignals(
-                    False
-                )
-
-            # -------------------------------------------------
-            # Update pending changes
-            # -------------------------------------------------
-
-            updated = {}
+            updated_pending = {}
 
             for (
                 key,
@@ -2621,22 +2815,16 @@ class ExcelEditorWindow(QWidget):
                 old_sheet, cell = key
 
                 if old_sheet == current_sheet:
-                    updated[
-                        (
-                            new_sheet_name,
-                            cell,
-                        )
+                    updated_pending[
+                        (new_sheet_name, cell)
                     ] = value
                 else:
-                    updated[
-                        key
-                    ] = value
+                    updated_pending[key] = value
 
-            self.pending_changes = updated
+            self.pending_changes = updated_pending
 
-            self.load_sheet(
-                new_sheet_name
-            )
+            self.rebuild_sheet_combo(new_sheet_name)
+            self.load_sheet(new_sheet_name)
 
             QMessageBox.information(
                 self,
@@ -2655,13 +2843,8 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.rename_sheet_button.setEnabled(
-                True
-            )
-
-            self.rename_sheet_button.setText(
-                "Rename Sheet"
-            )
+            self.rename_sheet_button.setEnabled(True)
+            self.rename_sheet_button.setText("Rename Sheet")
 
     # =========================================================
     # Delete Sheet
@@ -2674,17 +2857,19 @@ class ExcelEditorWindow(QWidget):
                 "Delete Sheet",
                 "Workbook is not loaded.",
             )
-
             return
 
         current_sheet = self.selected_sheet()
 
         if not current_sheet:
+            QMessageBox.warning(
+                self,
+                "Delete Sheet",
+                "Please select a sheet first.",
+            )
             return
 
-        if len(
-            self.workbook.sheetnames
-        ) == 1:
+        if len(self.workbook.sheetnames) == 1:
             QMessageBox.warning(
                 self,
                 "Delete Sheet",
@@ -2693,7 +2878,6 @@ class ExcelEditorWindow(QWidget):
                     "sheet in the workbook."
                 ),
             )
-
             return
 
         answer = QMessageBox.question(
@@ -2708,92 +2892,37 @@ class ExcelEditorWindow(QWidget):
             QMessageBox.StandardButton.No,
         )
 
-        if (
-            answer
-            != QMessageBox.StandardButton.Yes
-        ):
+        if answer != QMessageBox.StandardButton.Yes:
             return
 
-        self.delete_sheet_button.setEnabled(
-            False
-        )
-
-        self.delete_sheet_button.setText(
-            "Deleting..."
-        )
+        self.delete_sheet_button.setEnabled(False)
+        self.delete_sheet_button.setText("Deleting...")
 
         try:
-            result = (
-                self.api_client.delete_sheet(
-                    file_id=self.file_id,
-                    sheet_name=current_sheet,
-                )
+            result = self.api_client.delete_sheet(
+                file_id=self.file_id,
+                sheet_name=current_sheet,
             )
 
-            # -------------------------------------------------
-            # Remove from local workbook
-            # -------------------------------------------------
+            worksheet = self.workbook[current_sheet]
+            self.workbook.remove(worksheet)
 
-            worksheet = self.workbook[
-                current_sheet
-            ]
+            self.clear_pending_for_sheet(current_sheet)
 
-            self.workbook.remove(
-                worksheet
+            remaining = self.workbook.sheetnames
+
+            self.rebuild_sheet_combo(
+                remaining[0] if remaining else None
             )
 
-            # -------------------------------------------------
-            # Remove pending changes
-            # -------------------------------------------------
-
-            self.pending_changes = {
-                key: value
-                for key, value
-                in self.pending_changes.items()
-                if key[0] != current_sheet
-            }
-
-            # -------------------------------------------------
-            # Update combo
-            # -------------------------------------------------
-
-            self.sheet_combo.blockSignals(
-                True
-            )
-
-            try:
-                current_index = (
-                    self.sheet_combo.currentIndex()
-                )
-
-                self.sheet_combo.removeItem(
-                    current_index
-                )
-
-            finally:
-                self.sheet_combo.blockSignals(
-                    False
-                )
-
-            # -------------------------------------------------
-            # Select another sheet
-            # -------------------------------------------------
-
-            if self.workbook.sheetnames:
-                new_index = min(
-                    current_index,
-                    len(
-                        self.workbook.sheetnames
-                    ) - 1,
-                )
-
-                self.sheet_combo.setCurrentIndex(
-                    new_index
-                )
-
+            if remaining:
                 self.load_sheet(
                     self.sheet_combo.currentText()
                 )
+            else:
+                self.table.clear()
+                self.table.setRowCount(0)
+                self.table.setColumnCount(0)
 
             QMessageBox.information(
                 self,
@@ -2812,75 +2941,17 @@ class ExcelEditorWindow(QWidget):
             )
 
         finally:
-            self.delete_sheet_button.setEnabled(
-                True
-            )
-
-            self.delete_sheet_button.setText(
-                "Delete Sheet"
-            )
-
-    # =========================================================
-    # Excel Column Letter
-    # =========================================================
-
-    def column_letter(
-        self,
-        column_number: int,
-    ) -> str:
-        result = ""
-
-        while column_number > 0:
-            column_number, remainder = divmod(
-                column_number - 1,
-                26,
-            )
-
-            result = (
-                chr(65 + remainder)
-                + result
-            )
-
-        return result
-
-    # =========================================================
-    # Excel Column Number
-    # =========================================================
-
-    def column_number(
-        self,
-        column_letters: str,
-    ) -> int:
-        result = 0
-
-        for char in column_letters.upper():
-            if not char.isalpha():
-                continue
-
-            result = (
-                result * 26
-                + (
-                    ord(char)
-                    - ord("A")
-                    + 1
-                )
-            )
-
-        return result
+            self.delete_sheet_button.setEnabled(True)
+            self.delete_sheet_button.setText("Delete Sheet")
 
     # =========================================================
     # Cleanup
     # =========================================================
 
-    def closeEvent(
-        self,
-        event,
-    ):
+    def closeEvent(self, event):
         if self.temp_file_path:
             try:
-                os.remove(
-                    self.temp_file_path
-                )
+                os.remove(self.temp_file_path)
             except OSError:
                 pass
 

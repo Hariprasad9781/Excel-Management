@@ -8,16 +8,18 @@ from api.schemas import (
     ColumnDeleteRequest,
     ColumnOperationResponse,
     ColumnUpdateRequest,
+    ExcelFormatRequest,
+    ExcelFormatResponse,
     ExcelSearchResponse,
     RowAddRequest,
     RowDeleteRequest,
     RowOperationResponse,
     RowUpdateRequest,
     SheetCreateRequest,
-    SheetRenameRequest,
     SheetDeleteRequest,
     SheetOperationResponse,
     SheetPreviewResponse,
+    SheetRenameRequest,
     SheetsResponse,
 )
 from database import get_db
@@ -27,13 +29,14 @@ from models.user import User
 from services.excel_service import (
     add_column,
     add_row,
+    create_sheet,
     delete_column,
     delete_row,
-    create_sheet,
-    rename_sheet,
     delete_sheet,
+    format_excel_range,
     get_sheet_names,
     get_sheet_preview,
+    rename_sheet,
     search_excel,
     update_cell,
     update_column,
@@ -41,21 +44,27 @@ from services.excel_service import (
 )
 
 
+# ============================================================
+# Router Configuration
+# ============================================================
+
 router = APIRouter(
     prefix="/files",
     tags=["Excel Data"],
 )
 
 
-# =========================================================
+# ============================================================
 # Get User File
-# =========================================================
+# ============================================================
+
 
 def get_user_file(
     file_id: int,
     current_user: User,
     db: Session,
 ) -> ExcelFile:
+
     excel_file = (
         db.query(ExcelFile)
         .filter(
@@ -74,9 +83,10 @@ def get_user_file(
     return excel_file
 
 
-# =========================================================
+# ============================================================
 # Sheet Management
-# =========================================================
+# ============================================================
+
 
 @router.get(
     "/{file_id}/sheets",
@@ -113,6 +123,11 @@ def list_sheets(
         "filename": excel_file.original_filename,
         "sheets": sheets,
     }
+
+
+# ============================================================
+# Create Sheet
+# ============================================================
 
 
 @router.post(
@@ -163,6 +178,11 @@ def create_excel_sheet(
     }
 
 
+# ============================================================
+# Rename Sheet
+# ============================================================
+
+
 @router.put(
     "/{file_id}/sheets",
     response_model=SheetOperationResponse,
@@ -209,6 +229,11 @@ def rename_excel_sheet(
         "sheet_name": data.new_sheet_name,
         "message": "Sheet renamed successfully",
     }
+
+
+# ============================================================
+# Delete Sheet
+# ============================================================
 
 
 @router.delete(
@@ -258,9 +283,10 @@ def delete_excel_sheet(
     }
 
 
-# =========================================================
+# ============================================================
 # Sheet Preview
-# =========================================================
+# ============================================================
+
 
 @router.get(
     "/{file_id}/preview",
@@ -300,7 +326,7 @@ def preview_sheet(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -317,9 +343,10 @@ def preview_sheet(
     }
 
 
-# =========================================================
+# ============================================================
 # Cell Operations
-# =========================================================
+# ============================================================
+
 
 @router.put(
     "/{file_id}/cell",
@@ -353,7 +380,7 @@ def edit_cell(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -372,9 +399,10 @@ def edit_cell(
     }
 
 
-# =========================================================
+# ============================================================
 # Row Operations
-# =========================================================
+# ============================================================
+
 
 @router.post(
     "/{file_id}/rows",
@@ -408,7 +436,7 @@ def add_excel_row(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -458,7 +486,7 @@ def update_excel_row(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -507,7 +535,7 @@ def delete_excel_row(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -525,9 +553,10 @@ def delete_excel_row(
     }
 
 
-# =========================================================
+# ============================================================
 # Column Operations
-# =========================================================
+# ============================================================
+
 
 @router.post(
     "/{file_id}/columns",
@@ -561,7 +590,7 @@ def add_excel_column(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -611,7 +640,7 @@ def update_excel_column(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -660,7 +689,7 @@ def delete_excel_column(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -678,9 +707,10 @@ def delete_excel_column(
     }
 
 
-# =========================================================
+# ============================================================
 # Excel Search
-# =========================================================
+# ============================================================
+
 
 @router.get(
     "/{file_id}/search",
@@ -714,7 +744,7 @@ def search_file(
 
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
@@ -731,4 +761,67 @@ def search_file(
         "search_term": search_term,
         "results": results,
         "result_count": len(results),
+    }
+
+
+# ============================================================
+# Excel Formatting
+# ============================================================
+
+
+@router.put(
+    "/{file_id}/format",
+    response_model=ExcelFormatResponse,
+)
+def format_excel_cells(
+    file_id: int,
+    data: ExcelFormatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    excel_file = get_user_file(
+        file_id=file_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    try:
+        format_excel_range(
+            excel_file=excel_file,
+            sheet_name=data.sheet_name,
+            cell_range=data.cell_range,
+            bold=data.bold,
+            italic=data.italic,
+            underline=data.underline,
+            font_size=data.font_size,
+            font_color=data.font_color,
+            fill_color=data.fill_color,
+            horizontal_alignment=data.horizontal_alignment,
+            vertical_alignment=data.vertical_alignment,
+            number_format=data.number_format,
+        )
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored file not found",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to format Excel cells: {exc}",
+        )
+
+    return {
+        "file_id": file_id,
+        "sheet_name": data.sheet_name,
+        "cell_range": data.cell_range,
+        "message": "Excel formatting applied successfully",
     }
