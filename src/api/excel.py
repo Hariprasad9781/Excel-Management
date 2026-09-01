@@ -40,11 +40,16 @@ from services.excel_service import (
     update_row,
 )
 
+
 router = APIRouter(
     prefix="/files",
     tags=["Excel Data"],
 )
 
+
+# =========================================================
+# Get User File
+# =========================================================
 
 def get_user_file(
     file_id: int,
@@ -68,6 +73,10 @@ def get_user_file(
 
     return excel_file
 
+
+# =========================================================
+# Sheet Management
+# =========================================================
 
 @router.get(
     "/{file_id}/sheets",
@@ -104,6 +113,7 @@ def list_sheets(
         "filename": excel_file.original_filename,
         "sheets": sheets,
     }
+
 
 @router.post(
     "/{file_id}/sheets",
@@ -152,6 +162,7 @@ def create_excel_sheet(
         "message": "Sheet created successfully",
     }
 
+
 @router.put(
     "/{file_id}/sheets",
     response_model=SheetOperationResponse,
@@ -199,6 +210,7 @@ def rename_excel_sheet(
         "message": "Sheet renamed successfully",
     }
 
+
 @router.delete(
     "/{file_id}/sheets",
     response_model=SheetOperationResponse,
@@ -245,6 +257,10 @@ def delete_excel_sheet(
         "message": "Sheet deleted successfully",
     }
 
+
+# =========================================================
+# Sheet Preview
+# =========================================================
 
 @router.get(
     "/{file_id}/preview",
@@ -301,6 +317,10 @@ def preview_sheet(
     }
 
 
+# =========================================================
+# Cell Operations
+# =========================================================
+
 @router.put(
     "/{file_id}/cell",
     response_model=CellUpdateResponse,
@@ -352,10 +372,9 @@ def edit_cell(
     }
 
 
-# -------------------------------------------------------------------
+# =========================================================
 # Row Operations
-# -------------------------------------------------------------------
-
+# =========================================================
 
 @router.post(
     "/{file_id}/rows",
@@ -505,10 +524,10 @@ def delete_excel_row(
         "message": "Row deleted successfully",
     }
 
-# -------------------------------------------------------------------
-# Column Operations
-# -------------------------------------------------------------------
 
+# =========================================================
+# Column Operations
+# =========================================================
 
 @router.post(
     "/{file_id}/columns",
@@ -658,10 +677,10 @@ def delete_excel_column(
         "message": "Column deleted successfully",
     }
 
-# -------------------------------------------------------------------
-# Excel Search
-# -------------------------------------------------------------------
 
+# =========================================================
+# Excel Search
+# =========================================================
 
 @router.get(
     "/{file_id}/search",

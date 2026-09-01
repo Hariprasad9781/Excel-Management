@@ -716,10 +716,20 @@ class ApiClient:
                 "You are not logged in."
             )
 
-        response = requests.post(
+        if not sheet_name.strip():
+            raise Exception(
+                "Sheet name cannot be empty."
+            )
+
+        if not search_term.strip():
+            raise Exception(
+                "Search term cannot be empty."
+            )
+
+        response = requests.get(
             f"{self.base_url}/files/{file_id}/search",
             headers=self._headers(),
-            json={
+            params={
                 "sheet_name": sheet_name,
                 "search_term": search_term,
             },
@@ -727,12 +737,12 @@ class ApiClient:
         )
 
         print(
-            "POST /search status:",
+            "GET /search status:",
             response.status_code,
         )
 
         print(
-            "POST /search response:",
+            "GET /search response:",
             response.text,
         )
 
