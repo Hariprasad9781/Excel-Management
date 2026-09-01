@@ -988,9 +988,10 @@ class ExcelEditorWindow(QWidget):
             # -------------------------------------------------
             # Row number
             # -------------------------------------------------
+            record_number = excel_row - 1
 
             row_item = QTableWidgetItem(
-                str(excel_row)
+                str(record_number)
             )
 
             row_item.setData(

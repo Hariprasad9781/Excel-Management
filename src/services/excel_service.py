@@ -14,12 +14,49 @@ from models.excel_file import ExcelFile
 def get_excel_file_path(
     excel_file: ExcelFile,
 ) -> str:
+    """
+    Return the stored Excel file path.
+
+    Raises:
+        FileNotFoundError: If the stored Excel file does not exist.
+    """
+
     if not os.path.exists(excel_file.file_path):
         raise FileNotFoundError(
             "Stored file not found"
         )
 
     return excel_file.file_path
+
+
+def _load_workbook(
+    excel_file: ExcelFile,
+):
+    """
+    Load the Excel workbook from storage.
+    """
+
+    file_path = get_excel_file_path(
+        excel_file
+    )
+
+    return load_workbook(file_path)
+
+
+def _validate_sheet(
+    workbook,
+    sheet_name: str,
+):
+    """
+    Validate that the requested sheet exists.
+    """
+
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found"
+        )
+
+    return workbook[sheet_name]
 
 
 # ============================================================
@@ -47,19 +84,21 @@ def create_sheet(
         excel_file
     )
 
-    workbook = load_workbook(file_path)
-
     if not sheet_name.strip():
         raise ValueError(
             "Sheet name cannot be empty"
         )
+
+    workbook = load_workbook(file_path)
 
     if sheet_name in workbook.sheetnames:
         raise ValueError(
             f"Sheet '{sheet_name}' already exists"
         )
 
-    workbook.create_sheet(sheet_name)
+    workbook.create_sheet(
+        sheet_name
+    )
 
     workbook.save(file_path)
 
@@ -175,12 +214,10 @@ def update_cell(
 
     workbook = load_workbook(file_path)
 
-    if sheet_name not in workbook.sheetnames:
-        raise ValueError(
-            f"Sheet '{sheet_name}' not found"
-        )
-
-    worksheet = workbook[sheet_name]
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
 
     worksheet[cell] = value
 
@@ -205,14 +242,12 @@ def add_row(
 
     workbook = load_workbook(file_path)
 
-    if sheet_name not in workbook.sheetnames:
-        raise ValueError(
-            f"Sheet '{sheet_name}' not found"
-        )
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
 
-    worksheet = workbook[sheet_name]
-
-    # Add the row at the end
+    # Add row at the end of the worksheet.
     worksheet.append(row_data)
 
     row_number = worksheet.max_row
@@ -236,12 +271,10 @@ def update_row(
 
     workbook = load_workbook(file_path)
 
-    if sheet_name not in workbook.sheetnames:
-        raise ValueError(
-            f"Sheet '{sheet_name}' not found"
-        )
-
-    worksheet = workbook[sheet_name]
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
 
     if (
         row_number < 1
@@ -275,12 +308,10 @@ def delete_row(
 
     workbook = load_workbook(file_path)
 
-    if sheet_name not in workbook.sheetnames:
-        raise ValueError(
-            f"Sheet '{sheet_name}' not found"
-        )
-
-    worksheet = workbook[sheet_name]
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
 
     if (
         row_number < 1
@@ -308,29 +339,78 @@ def add_column(
     sheet_name: str,
     column_number: int,
 ) -> None:
+    """
+    Insert a new blank column.
+
+    Important:
+    OpenPyXL may not preserve a completely empty inserted
+    column as part of worksheet.max_column after saving.
+
+    Therefore, after inserting the column, we explicitly
+    create blank cells in that column. This makes the column
+    persistent and allows subsequent update/delete operations
+    to find it.
+    """
+
     file_path = get_excel_file_path(
         excel_file
     )
 
     workbook = load_workbook(file_path)
 
-    if sheet_name not in workbook.sheetnames:
-        raise ValueError(
-            f"Sheet '{sheet_name}' not found"
-        )
-
-    worksheet = workbook[sheet_name]
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
 
     if column_number < 1:
         raise ValueError(
             "Column number must be greater than 0"
         )
 
-    # Insert a blank column
+    # A new column can be inserted anywhere from column 1
+    # through one position after the current last column.
+    max_column = worksheet.max_column
+
+    if column_number > max_column + 1:
+        raise ValueError(
+            f"Column {column_number} is out of range. "
+            f"Next available column is {max_column + 1}."
+        )
+
+    # Insert the new column.
     worksheet.insert_cols(
         column_number,
         1,
     )
+
+    # --------------------------------------------------------
+    # IMPORTANT FIX
+    # --------------------------------------------------------
+    #
+    # Create actual blank cells in the new column.
+    #
+    # Without this, a completely empty inserted column may
+    # disappear from worksheet dimensions after save/reload.
+    #
+    # Using an empty string rather than None ensures that
+    # OpenPyXL creates a real cell.
+    # --------------------------------------------------------
+
+    row_count = max(
+        worksheet.max_row,
+        1,
+    )
+
+    for row_number in range(
+        1,
+        row_count + 1,
+    ):
+        worksheet.cell(
+            row=row_number,
+            column=column_number,
+            value="",
+        )
 
     workbook.save(file_path)
 
@@ -341,23 +421,27 @@ def update_column(
     column_number: int,
     column_name: str,
 ) -> None:
+    """
+    Rename/update the header of a column.
+    """
+
     file_path = get_excel_file_path(
         excel_file
     )
 
     workbook = load_workbook(file_path)
 
-    if sheet_name not in workbook.sheetnames:
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
+
+    if column_number < 1:
         raise ValueError(
-            f"Sheet '{sheet_name}' not found"
+            "Column number must be greater than 0"
         )
 
-    worksheet = workbook[sheet_name]
-
-    if (
-        column_number < 1
-        or column_number > worksheet.max_column
-    ):
+    if column_number > worksheet.max_column:
         raise ValueError(
             f"Column {column_number} not found"
         )
@@ -367,7 +451,7 @@ def update_column(
             "Column name cannot be empty"
         )
 
-    # Update the first-row header
+    # Update the first-row header.
     worksheet.cell(
         row=1,
         column=column_number,
@@ -382,27 +466,32 @@ def delete_column(
     sheet_name: str,
     column_number: int,
 ) -> None:
+    """
+    Delete a column from the worksheet.
+    """
+
     file_path = get_excel_file_path(
         excel_file
     )
 
     workbook = load_workbook(file_path)
 
-    if sheet_name not in workbook.sheetnames:
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
+
+    if column_number < 1:
         raise ValueError(
-            f"Sheet '{sheet_name}' not found"
+            "Column number must be greater than 0"
         )
 
-    worksheet = workbook[sheet_name]
-
-    if (
-        column_number < 1
-        or column_number > worksheet.max_column
-    ):
+    if column_number > worksheet.max_column:
         raise ValueError(
             f"Column {column_number} not found"
         )
 
+    # Delete the requested column.
     worksheet.delete_cols(
         column_number,
         1,
@@ -421,6 +510,14 @@ def search_excel(
     sheet_name: str,
     search_term: str,
 ) -> list[dict]:
+    """
+    Search the complete worksheet for a term.
+
+    Returns:
+        A list containing matching cells and their
+        row/column information.
+    """
+
     file_path = get_excel_file_path(
         excel_file
     )
@@ -430,31 +527,33 @@ def search_excel(
         data_only=False,
     )
 
-    if sheet_name not in workbook.sheetnames:
-        raise ValueError(
-            f"Sheet '{sheet_name}' not found"
-        )
+    worksheet = _validate_sheet(
+        workbook,
+        sheet_name,
+    )
 
     if not search_term.strip():
         raise ValueError(
             "Search term cannot be empty"
         )
 
-    worksheet = workbook[sheet_name]
-
     results = []
 
+    search_value = search_term.lower()
+
     for row in worksheet.iter_rows():
+
         for cell in row:
+
             if cell.value is None:
                 continue
 
-            cell_value = str(cell.value)
+            cell_value = str(
+                cell.value
+            )
 
-            if (
-                search_term.lower()
-                in cell_value.lower()
-            ):
+            if search_value in cell_value.lower():
+
                 results.append(
                     {
                         "row_number": cell.row,
