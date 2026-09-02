@@ -21,6 +21,7 @@ from api.schemas import (
     SheetPreviewResponse,
     SheetRenameRequest,
     SheetsResponse,
+    WorkbookVersionsResponse,
 )
 from database import get_db
 from dependencies import get_current_user
@@ -43,6 +44,8 @@ from services.excel_service import (
     update_row,
 )
 
+from services.file_version_service import create_file_version
+from services.workbook_version_service import get_workbook_versions
 
 # ============================================================
 # Router Configuration
@@ -81,6 +84,43 @@ def get_user_file(
         )
 
     return excel_file
+
+
+# ============================================================
+# Workbook Version History
+# ============================================================
+
+
+@router.get(
+    "/{file_id}/versions",
+    response_model=WorkbookVersionsResponse,
+)
+def list_workbook_versions(
+    file_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    excel_file = get_user_file(
+        file_id=file_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    if excel_file.workbook_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File is not linked to a workbook",
+        )
+
+    versions = get_workbook_versions(
+        db=db,
+        workbook_id=excel_file.workbook_id,
+    )
+
+    return {
+        "workbook_id": excel_file.workbook_id,
+        "versions": versions,
+    }
 
 
 # ============================================================
@@ -153,19 +193,33 @@ def create_excel_sheet(
             sheet_name=data.sheet_name,
         )
 
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Created sheet '{data.sheet_name}'"
+            ),
+        )
+
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to create sheet: {exc}",
@@ -174,9 +228,11 @@ def create_excel_sheet(
     return {
         "file_id": file_id,
         "sheet_name": data.sheet_name,
-        "message": "Sheet created successfully",
+        "message": (
+            f"Sheet created successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
-
 
 # ============================================================
 # Rename Sheet
@@ -206,19 +262,34 @@ def rename_excel_sheet(
             new_sheet_name=data.new_sheet_name,
         )
 
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Renamed sheet '{data.sheet_name}' "
+                f"to '{data.new_sheet_name}'"
+            ),
+        )
+
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to rename sheet: {exc}",
@@ -226,10 +297,12 @@ def rename_excel_sheet(
 
     return {
         "file_id": file_id,
-        "sheet_name": data.new_sheet_name,
-        "message": "Sheet renamed successfully",
+        "sheet_name": data.sheet_name,
+        "message": (
+            f"Sheet renamed successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
-
 
 # ============================================================
 # Delete Sheet
@@ -258,19 +331,33 @@ def delete_excel_sheet(
             sheet_name=data.sheet_name,
         )
 
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Deleted sheet '{data.sheet_name}'"
+            ),
+        )
+
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to delete sheet: {exc}",
@@ -279,7 +366,10 @@ def delete_excel_sheet(
     return {
         "file_id": file_id,
         "sheet_name": data.sheet_name,
-        "message": "Sheet deleted successfully",
+        "message": (
+            f"Sheet deleted successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
 
 
@@ -365,6 +455,9 @@ def edit_cell(
     )
 
     try:
+        # -----------------------------------------------------
+        # 1. Update the physical Excel file
+        # -----------------------------------------------------
         update_cell(
             excel_file=excel_file,
             sheet_name=data.sheet_name,
@@ -372,19 +465,43 @@ def edit_cell(
             value=data.value,
         )
 
+        # -----------------------------------------------------
+        # 2. Create a new version from the updated Excel file
+        # -----------------------------------------------------
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Updated cell {data.cell} "
+                f"in sheet '{data.sheet_name}'"
+            ),
+        )
+
+        # -----------------------------------------------------
+        # 3. Commit version + workbook version number
+        # -----------------------------------------------------
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to update cell: {exc}",
@@ -395,9 +512,11 @@ def edit_cell(
         "sheet_name": data.sheet_name,
         "cell": data.cell,
         "value": data.value,
-        "message": "Cell updated successfully",
+        "message": (
+            f"Cell updated successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
-
 
 # ============================================================
 # Row Operations
@@ -422,25 +541,52 @@ def add_excel_row(
     )
 
     try:
+        # -----------------------------------------------------
+        # 1. Add the row to the physical Excel file
+        # -----------------------------------------------------
         row_number = add_row(
             excel_file=excel_file,
             sheet_name=data.sheet_name,
             row_data=data.row_data,
         )
 
+        # -----------------------------------------------------
+        # 2. Create a version from the updated Excel file
+        # -----------------------------------------------------
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Added row {row_number} "
+                f"in sheet '{data.sheet_name}'"
+            ),
+        )
+
+        # -----------------------------------------------------
+        # 3. Commit version + workbook version number
+        # -----------------------------------------------------
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to add row: {exc}",
@@ -450,9 +596,11 @@ def add_excel_row(
         "file_id": file_id,
         "sheet_name": data.sheet_name,
         "row_number": row_number,
-        "message": "Row added successfully",
+        "message": (
+            f"Row added successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
-
 
 @router.put(
     "/{file_id}/rows",
@@ -471,6 +619,9 @@ def update_excel_row(
     )
 
     try:
+        # -----------------------------------------------------
+        # 1. Update the row in the physical Excel file
+        # -----------------------------------------------------
         update_row(
             excel_file=excel_file,
             sheet_name=data.sheet_name,
@@ -478,19 +629,43 @@ def update_excel_row(
             row_data=data.row_data,
         )
 
+        # -----------------------------------------------------
+        # 2. Create a version from the updated Excel file
+        # -----------------------------------------------------
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Updated row {data.row_number} "
+                f"in sheet '{data.sheet_name}'"
+            ),
+        )
+
+        # -----------------------------------------------------
+        # 3. Commit version + workbook version number
+        # -----------------------------------------------------
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to update row: {exc}",
@@ -500,9 +675,11 @@ def update_excel_row(
         "file_id": file_id,
         "sheet_name": data.sheet_name,
         "row_number": data.row_number,
-        "message": "Row updated successfully",
+        "message": (
+            f"Row updated successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
-
 
 @router.delete(
     "/{file_id}/rows",
@@ -527,19 +704,34 @@ def delete_excel_row(
             row_number=data.row_number,
         )
 
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Deleted row {data.row_number} "
+                f"in sheet '{data.sheet_name}'"
+            ),
+        )
+
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to delete row: {exc}",
@@ -549,9 +741,11 @@ def delete_excel_row(
         "file_id": file_id,
         "sheet_name": data.sheet_name,
         "row_number": data.row_number,
-        "message": "Row deleted successfully",
+        "message": (
+            f"Row deleted successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
-
 
 # ============================================================
 # Column Operations
@@ -582,19 +776,34 @@ def add_excel_column(
             column_number=data.column_number,
         )
 
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Added column {data.column_number} "
+                f"in sheet '{data.sheet_name}'"
+            ),
+        )
+
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to add column: {exc}",
@@ -604,7 +813,10 @@ def add_excel_column(
         "file_id": file_id,
         "sheet_name": data.sheet_name,
         "column_number": data.column_number,
-        "message": "Column added successfully",
+        "message": (
+            f"Column added successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
 
 
@@ -632,19 +844,34 @@ def update_excel_column(
             column_name=data.column_name,
         )
 
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Updated column {data.column_number} "
+                f"in sheet '{data.sheet_name}'"
+            ),
+        )
+
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to update column: {exc}",
@@ -654,7 +881,10 @@ def update_excel_column(
         "file_id": file_id,
         "sheet_name": data.sheet_name,
         "column_number": data.column_number,
-        "message": "Column updated successfully",
+        "message": (
+            f"Column updated successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
 
 
@@ -681,19 +911,34 @@ def delete_excel_column(
             column_number=data.column_number,
         )
 
+        version = create_file_version(
+            db=db,
+            excel_file=excel_file,
+            created_by=current_user.id,
+            change_summary=(
+                f"Deleted column {data.column_number} "
+                f"in sheet '{data.sheet_name}'"
+            ),
+        )
+
+        db.commit()
+
     except FileNotFoundError:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Stored file not found",
         )
 
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
 
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unable to delete column: {exc}",
@@ -703,9 +948,11 @@ def delete_excel_column(
         "file_id": file_id,
         "sheet_name": data.sheet_name,
         "column_number": data.column_number,
-        "message": "Column deleted successfully",
+        "message": (
+            f"Column deleted successfully. "
+            f"Version {version.version_number} created."
+        ),
     }
-
 
 # ============================================================
 # Excel Search

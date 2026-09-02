@@ -7,7 +7,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
 
-# India Standard Time
 IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -22,6 +21,18 @@ class ExcelFile(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"),
         nullable=False,
+        index=True,
+    )
+
+    # ---------------------------------------------------------
+    # Workbook relationship
+    # ---------------------------------------------------------
+    workbook_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "workbooks.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
         index=True,
     )
 
@@ -56,7 +67,16 @@ class ExcelFile(Base):
         nullable=False,
     )
 
+    # ---------------------------------------------------------
+    # Relationships
+    # ---------------------------------------------------------
+
     user = relationship(
         "User",
         back_populates="excel_files",
+    )
+
+    workbook = relationship(
+        "Workbook",
+        back_populates="excel_file",
     )

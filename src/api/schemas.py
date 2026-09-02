@@ -261,3 +261,23 @@ class ExcelFormatResponse(BaseModel):
     sheet_name: str
     cell_range: str
     message: str
+
+
+# ============================================================
+# WorkBook Version
+# ============================================================
+
+class WorkbookVersionResponse(BaseModel):
+    id: int
+    workbook_id: int
+    version_number: int
+    created_by: int | None
+    created_at: datetime
+    change_summary: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class WorkbookVersionsResponse(BaseModel):
+    workbook_id: int
+    versions: list[WorkbookVersionResponse]

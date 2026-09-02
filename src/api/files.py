@@ -1,13 +1,6 @@
 import os
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    HTTPException,
-    UploadFile,
-    status,
-)
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -21,12 +14,9 @@ from database import get_db
 from dependencies import get_current_user
 from models.excel_file import ExcelFile
 from models.user import User
+from services.excel_import_service import import_excel_to_database
 from services.file_service import save_excel_file
 
-
-# ============================================================
-# Router Configuration
-# ============================================================
 
 router = APIRouter(
     prefix="/files",
@@ -34,20 +24,12 @@ router = APIRouter(
 )
 
 
-# ============================================================
-# File Configuration
-# ============================================================
-
-ALLOWED_EXTENSIONS = {
-    ".xlsx",
-    ".xls",
-}
+ALLOWED_EXTENSIONS = {".xlsx", ".xls"}
 
 
-# ============================================================
-# Upload File
-# ============================================================
-
+# ---------------------------------------------------------------------------
+# Upload Excel File
+# ---------------------------------------------------------------------------
 
 @router.post(
     "/upload",
@@ -59,9 +41,22 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # --------------------------------------------------------
+    """
+    Upload an Excel file.
+
+    For .xlsx files:
+        1. Save the original Excel file to storage.
+        2. Import its workbook/sheets/cells into PostgreSQL.
+        3. If database import fails, clean up the saved file and DB record.
+
+    For .xls files:
+        The original file is saved, but database import is skipped because
+        the current database importer supports .xlsx only.
+    """
+
+    # -----------------------------------------------------------------------
     # Validate filename
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     if not file.filename:
         raise HTTPException(
@@ -69,14 +64,11 @@ async def upload_file(
             detail="Filename is required",
         )
 
-    # --------------------------------------------------------
-    # Validate file extension
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Validate extension
+    # -----------------------------------------------------------------------
 
-    _, extension = os.path.splitext(
-        file.filename
-    )
-
+    _, extension = os.path.splitext(file.filename)
     extension = extension.lower()
 
     if extension not in ALLOWED_EXTENSIONS:
@@ -85,15 +77,11 @@ async def upload_file(
             detail="Only .xlsx and .xls files are allowed",
         )
 
-    # --------------------------------------------------------
-    # Read file
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Read uploaded file
+    # -----------------------------------------------------------------------
 
     file_content = await file.read()
-
-    # --------------------------------------------------------
-    # Validate empty file
-    # --------------------------------------------------------
 
     if not file_content:
         raise HTTPException(
@@ -101,9 +89,9 @@ async def upload_file(
             detail="File is empty",
         )
 
-    # --------------------------------------------------------
-    # Save file and database metadata
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Save physical Excel file + metadata
+    # -----------------------------------------------------------------------
 
     try:
         excel_file = save_excel_file(
@@ -121,9 +109,60 @@ async def upload_file(
             detail="Failed to save Excel file",
         )
 
-    # --------------------------------------------------------
-    # Response
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Import .xlsx into PostgreSQL
+    # -----------------------------------------------------------------------
+
+    if extension == ".xlsx":
+
+        try:
+            import_excel_to_database(
+                db=db,
+                file_path=excel_file.file_path,
+                owner_id=current_user.id,
+                original_filename=file.filename,
+            )
+
+        except Exception:
+            # ---------------------------------------------------------------
+            # Database import failed.
+            #
+            # The importer may already have rolled back its transaction,
+            # but the ExcelFile record was created by save_excel_file().
+            # Remove the metadata record and physical file as well.
+            # ---------------------------------------------------------------
+
+            db.rollback()
+
+            # ---------------------------------------------------------------
+            # Remove physical file
+            # ---------------------------------------------------------------
+
+            if os.path.exists(excel_file.file_path):
+                try:
+                    os.remove(excel_file.file_path)
+                except OSError:
+                    pass
+
+            # ---------------------------------------------------------------
+            # Remove ExcelFile metadata record
+            # ---------------------------------------------------------------
+
+            try:
+                db.delete(excel_file)
+                db.commit()
+
+            except Exception:
+                db.rollback()
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Excel file was saved but database import failed",
+            )
+
+    # -----------------------------------------------------------------------
+    # Return upload response
+    # -----------------------------------------------------------------------
 
     return {
         "id": excel_file.id,
@@ -134,10 +173,9 @@ async def upload_file(
     }
 
 
-# ============================================================
-# List Files
-# ============================================================
-
+# ---------------------------------------------------------------------------
+# List User Files
+# ---------------------------------------------------------------------------
 
 @router.get(
     "/",
@@ -147,7 +185,10 @@ def list_files(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Get only files belonging to the logged-in user
+    """
+    Return all Excel files belonging to the current user.
+    """
+
     files = (
         db.query(ExcelFile)
         .filter(
@@ -161,21 +202,24 @@ def list_files(
 
     return [
         {
-            "id": file.id,
-            "filename": file.original_filename,
-            "stored_filename": file.stored_filename,
-            "file_size": file.file_size,
-            "created_at": file.created_at,
-            "updated_at": file.updated_at,
+            "id": excel_file.id,
+            "filename": excel_file.original_filename,
+
+            # FIX:
+            # FileListItem requires stored_filename.
+            "stored_filename": excel_file.stored_filename,
+
+            "file_size": excel_file.file_size,
+            "created_at": excel_file.created_at,
+            "updated_at": excel_file.updated_at,
         }
-        for file in files
+        for excel_file in files
     ]
 
 
-# ============================================================
+# ---------------------------------------------------------------------------
 # Get File Details
-# ============================================================
-
+# ---------------------------------------------------------------------------
 
 @router.get(
     "/{file_id}",
@@ -186,6 +230,12 @@ def get_file_details(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Return details for a specific Excel file.
+
+    Users can only access their own files.
+    """
+
     excel_file = (
         db.query(ExcelFile)
         .filter(
@@ -205,16 +255,16 @@ def get_file_details(
         "id": excel_file.id,
         "filename": excel_file.original_filename,
         "stored_filename": excel_file.stored_filename,
+        "file_path": excel_file.file_path,
         "file_size": excel_file.file_size,
         "created_at": excel_file.created_at,
         "updated_at": excel_file.updated_at,
     }
 
 
-# ============================================================
-# Download File
-# ============================================================
-
+# ---------------------------------------------------------------------------
+# Download Excel File
+# ---------------------------------------------------------------------------
 
 @router.get(
     "/{file_id}/download",
@@ -224,6 +274,12 @@ def download_file(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Download the original uploaded Excel file.
+
+    Users can only download their own files.
+    """
+
     excel_file = (
         db.query(ExcelFile)
         .filter(
@@ -239,26 +295,34 @@ def download_file(
             detail="File not found",
         )
 
-    # Check that the physical file still exists
-    if not os.path.exists(
-        excel_file.file_path
-    ):
+    # -----------------------------------------------------------------------
+    # Check physical file
+    # -----------------------------------------------------------------------
+
+    if not os.path.exists(excel_file.file_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Stored file not found",
+            detail="Physical file not found",
         )
+
+    # -----------------------------------------------------------------------
+    # Return file
+    # -----------------------------------------------------------------------
 
     return FileResponse(
         path=excel_file.file_path,
         filename=excel_file.original_filename,
-        media_type="application/octet-stream",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            if excel_file.original_filename.lower().endswith(".xlsx")
+            else "application/vnd.ms-excel"
+        ),
     )
 
 
-# ============================================================
-# Delete File
-# ============================================================
-
+# ---------------------------------------------------------------------------
+# Delete Excel File
+# ---------------------------------------------------------------------------
 
 @router.delete(
     "/{file_id}",
@@ -269,6 +333,18 @@ def delete_file(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Delete an Excel file.
+
+    This removes:
+        - Physical Excel file
+        - ExcelFile metadata record
+
+    Database workbook data is intentionally NOT deleted here yet.
+    That cleanup will be handled when workbook/file relationships are
+    fully integrated.
+    """
+
     excel_file = (
         db.query(ExcelFile)
         .filter(
@@ -284,36 +360,42 @@ def delete_file(
             detail="File not found",
         )
 
-    # --------------------------------------------------------
-    # Delete physical file
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Remove physical file
+    # -----------------------------------------------------------------------
 
-    if os.path.exists(
-        excel_file.file_path
-    ):
+    if os.path.exists(excel_file.file_path):
+
         try:
-            os.remove(
-                excel_file.file_path
-            )
+            os.remove(excel_file.file_path)
 
         except OSError:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to delete stored file",
+                detail="Failed to delete physical file",
             )
 
-    # --------------------------------------------------------
-    # Delete database record
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Remove database metadata
+    # -----------------------------------------------------------------------
 
-    db.delete(excel_file)
-    db.commit()
+    try:
+        db.delete(excel_file)
+        db.commit()
 
-    # --------------------------------------------------------
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete file record",
+        )
+
+    # -----------------------------------------------------------------------
     # Response
-    # --------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     return {
+        "id": file_id,
         "message": "File deleted successfully",
-        "file_id": file_id,
     }
