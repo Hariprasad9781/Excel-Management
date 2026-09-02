@@ -1,51 +1,55 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
 
-
 IST = ZoneInfo("Asia/Kolkata")
 
 
-class User(Base):
-    __tablename__ = "users"
+class Worksheet(Base):
+    __tablename__ = "worksheets"
 
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
     )
 
-    username: Mapped[str] = mapped_column(
-        String(50),
-        unique=True,
+    workbook_id: Mapped[int] = mapped_column(
+        ForeignKey("workbooks.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
-    email: Mapped[str] = mapped_column(
-        String(255),
-        unique=True,
-        nullable=False,
-        index=True,
-    )
-
-    password_hash: Mapped[str] = mapped_column(
+    name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
     )
 
-    is_active: Mapped[bool] = mapped_column(
+    position: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    max_row: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    max_column: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    is_deleted: Mapped[bool] = mapped_column(
         Boolean,
-        default=True,
         nullable=False,
-    )
-
-    role_id: Mapped[int | None] = mapped_column(
-        ForeignKey("roles.id", ondelete="SET NULL"),
-        nullable=True,
+        default=False,
         index=True,
     )
 
@@ -62,19 +66,13 @@ class User(Base):
         nullable=False,
     )
 
-    role = relationship(
-        "Role",
-        back_populates="users",
+    workbook = relationship(
+        "Workbook",
+        back_populates="worksheets",
     )
 
-    workbooks = relationship(
-    "Workbook",
-    back_populates="owner",
-    cascade="all, delete-orphan",
-    )
-
-    excel_files = relationship(
-        "ExcelFile",
-        back_populates="user",
+    cells = relationship(
+        "Cell",
+        back_populates="worksheet",
         cascade="all, delete-orphan",
     )

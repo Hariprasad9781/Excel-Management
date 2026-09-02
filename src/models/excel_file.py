@@ -1,9 +1,13 @@
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class ExcelFile(Base):
@@ -17,6 +21,18 @@ class ExcelFile(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"),
         nullable=False,
+        index=True,
+    )
+
+    # ---------------------------------------------------------
+    # Workbook relationship
+    # ---------------------------------------------------------
+    workbook_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "workbooks.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
         index=True,
     )
 
@@ -41,17 +57,26 @@ class ExcelFile(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(IST),
         nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(IST),
+        onupdate=lambda: datetime.now(IST),
         nullable=False,
     )
+
+    # ---------------------------------------------------------
+    # Relationships
+    # ---------------------------------------------------------
 
     user = relationship(
         "User",
         back_populates="excel_files",
+    )
+
+    workbook = relationship(
+        "Workbook",
+        back_populates="excel_file",
     )
