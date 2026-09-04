@@ -217,6 +217,47 @@ class ApiClient:
             default_message="Failed to fetch files",
         )
 
+    def get_workbook_versions(
+        self,
+        file_id: int,
+    ) -> dict:
+        """
+        Get version history for an Excel file.
+        """
+
+        response = requests.get(
+            f"{self.base_url}/files/{file_id}/versions",
+            headers=self._headers(),
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to load workbook versions",
+        )
+
+    def restore_workbook_version(
+        self,
+        file_id: int,
+        version_number: int,
+    ) -> dict:
+        """
+        Restore an Excel file to a previous workbook version.
+        """
+
+        response = requests.post(
+            f"{self.base_url}/files/{file_id}/versions/{version_number}/restore",
+            headers=self._headers(),
+            timeout=30,
+        )
+
+        return self._handle_response(
+            response=response,
+            expected_status=200,
+            default_message="Failed to restore workbook version",
+        )
+
     def get_file_details(
         self,
         file_id: int,
