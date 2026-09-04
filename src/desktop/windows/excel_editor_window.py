@@ -108,6 +108,7 @@ class ExcelEditorWindow(QWidget):
         self.create_sheet_button.clicked.connect(self.create_sheet)
         self.rename_sheet_button.clicked.connect(self.rename_sheet)
         self.delete_sheet_button.clicked.connect(self.delete_sheet)
+        self.version_history_button.clicked.connect(self.show_version_history)
 
         # Formatting controls
         self.bold_button.clicked.connect(self.toggle_bold)
@@ -179,12 +180,14 @@ class ExcelEditorWindow(QWidget):
         self.create_sheet_button = QPushButton("New Sheet")
         self.rename_sheet_button = QPushButton("Rename Sheet")
         self.delete_sheet_button = QPushButton("Delete Sheet")
+        self.version_history_button = QPushButton("Version History")
         self.refresh_button = QPushButton("Refresh")
 
         for button in (
             self.create_sheet_button,
             self.rename_sheet_button,
             self.delete_sheet_button,
+            self.version_history_button,
             self.refresh_button,
         ):
             button.setMinimumHeight(38)
@@ -192,8 +195,8 @@ class ExcelEditorWindow(QWidget):
         header_layout.addWidget(self.create_sheet_button)
         header_layout.addWidget(self.rename_sheet_button)
         header_layout.addWidget(self.delete_sheet_button)
+        header_layout.addWidget(self.version_history_button)
         header_layout.addWidget(self.refresh_button)
-
         self.refresh_button.clicked.connect(
             self.load_excel_file
         )
@@ -2943,6 +2946,208 @@ class ExcelEditorWindow(QWidget):
         finally:
             self.delete_sheet_button.setEnabled(True)
             self.delete_sheet_button.setText("Delete Sheet")
+
+
+    # =========================================================
+    # Version History
+    # =========================================================
+
+    def show_version_history(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Version History")
+        dialog.setMinimumSize(850, 500)
+
+        layout = QVBoxLayout()
+
+        title = QLabel(
+            f"Version History - {self.filename}"
+        )
+        title.setStyleSheet(
+            """
+            QLabel {
+                font-size: 20px;
+                font-weight: bold;
+            }
+            """
+        )
+
+        layout.addWidget(title)
+
+        versions_table = QTableWidget()
+        versions_table.setColumnCount(4)
+        versions_table.setHorizontalHeaderLabels(
+            [
+                "Version",
+                "Created At",
+                "Created By",
+                "Change Summary",
+            ]
+        )
+
+        versions_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        versions_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        versions_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+
+        layout.addWidget(versions_table)
+
+        button_layout = QHBoxLayout()
+
+        restore_button = QPushButton("Restore Selected")
+        restore_button.setMinimumHeight(38)
+
+        close_button = QPushButton("Close")
+        close_button.setMinimumHeight(38)
+
+        button_layout.addWidget(restore_button)
+        button_layout.addStretch()
+        button_layout.addWidget(close_button)
+
+        close_button.clicked.connect(dialog.reject)
+
+        layout.addLayout(button_layout)
+
+        dialog.setLayout(layout)
+
+        try:
+            result = self.api_client.get_workbook_versions(
+                file_id=self.file_id
+            )
+
+            versions = result.get("versions", [])
+
+            versions_table.setRowCount(len(versions))
+
+            for row, version in enumerate(versions):
+                versions_table.setItem(
+                    row,
+                    0,
+                    QTableWidgetItem(
+                        str(version.get("version_number", ""))
+                    ),
+                )
+
+                versions_table.setItem(
+                    row,
+                    1,
+                    QTableWidgetItem(
+                        str(version.get("created_at", ""))
+                    ),
+                )
+
+                versions_table.setItem(
+                    row,
+                    2,
+                    QTableWidgetItem(
+                        str(version.get("created_by", ""))
+                    ),
+                )
+
+                versions_table.setItem(
+                    row,
+                    3,
+                    QTableWidgetItem(
+                        str(version.get("change_summary") or ""),
+                    ),
+                )
+
+            versions_table.resizeColumnsToContents()
+
+            versions_table.horizontalHeader().setStretchLastSection(True)
+
+            if not versions:
+                QMessageBox.information(
+                    self,
+                    "Version History",
+                    "No version history is available for this workbook.",
+                )
+                return
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Version History",
+                f"Failed to load version history:\n\n{exc}",
+            )
+            return
+
+
+        def restore_selected_version():
+            selected_rows = versions_table.selectionModel().selectedRows()
+
+            if not selected_rows:
+                QMessageBox.warning(
+                    dialog,
+                    "Restore Version",
+                    "Please select a version to restore.",
+                )
+                return
+
+            row = selected_rows[0].row()
+
+            version_item = versions_table.item(row, 0)
+
+            if version_item is None:
+                QMessageBox.warning(
+                    dialog,
+                    "Restore Version",
+                    "Unable to determine the selected version.",
+                )
+                return
+
+            version_number = int(version_item.text())
+
+            reply = QMessageBox.question(
+                dialog,
+                "Confirm Restore",
+                (
+                    f"Are you sure you want to restore version "
+                    f"{version_number}?\n\n"
+                    "Your current workbook state will be replaced "
+                    "with this version."
+                ),
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+            try:
+                result = self.api_client.restore_workbook_version(
+                    file_id=self.file_id,
+                    version_number=version_number,
+                )
+
+                QMessageBox.information(
+                    dialog,
+                    "Restore Successful",
+                    (
+                        f"Version {version_number} has been restored.\n\n"
+                        f"New version: {result.get('new_version', '')}"
+                    ),
+                )
+
+                dialog.accept()
+                self.load_excel_file()
+
+            except Exception as exc:
+                QMessageBox.critical(
+                    dialog,
+                    "Restore Failed",
+                    f"Failed to restore version {version_number}:\n\n{exc}",
+                )
+
+
+        restore_button.clicked.connect(restore_selected_version)
+
+        dialog.exec()
 
     # =========================================================
     # Cleanup

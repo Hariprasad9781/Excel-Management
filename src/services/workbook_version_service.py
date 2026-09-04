@@ -131,3 +131,132 @@ def get_workbook_versions(
         )
         .all()
     )
+
+
+def restore_workbook_version(
+    db: Session,
+    workbook: Workbook,
+    version_number: int,
+    created_by: int,
+) -> WorkbookVersion:
+    """
+    Restore a workbook to a previously saved version.
+
+    The requested version is used as the source snapshot.
+    A new version is created after the restore so that the
+    original version history remains unchanged.
+    """
+
+    # -----------------------------------------------------------------------
+    # Find requested version
+    # -----------------------------------------------------------------------
+
+    version = (
+        db.query(WorkbookVersion)
+        .filter(
+            WorkbookVersion.workbook_id == workbook.id,
+            WorkbookVersion.version_number == version_number,
+        )
+        .first()
+    )
+
+    if version is None:
+        raise ValueError(
+            f"Version {version_number} not found for workbook {workbook.id}"
+        )
+
+    snapshot_data = version.snapshot_data
+
+    # -----------------------------------------------------------------------
+    # Validate snapshot
+    # -----------------------------------------------------------------------
+
+    if not snapshot_data:
+        raise ValueError(
+            f"Version {version_number} does not contain snapshot data"
+        )
+
+    worksheets_snapshot = snapshot_data.get("worksheets", [])
+
+    # -----------------------------------------------------------------------
+    # Remove current workbook worksheets
+    # -----------------------------------------------------------------------
+
+    current_worksheets = (
+        db.query(Worksheet)
+        .filter(
+            Worksheet.workbook_id == workbook.id,
+        )
+        .all()
+    )
+
+    for worksheet in current_worksheets:
+        db.delete(worksheet)
+
+    db.flush()
+
+    # -----------------------------------------------------------------------
+    # Restore worksheets and cells
+    # -----------------------------------------------------------------------
+
+    for worksheet_data in worksheets_snapshot:
+
+        worksheet = Worksheet(
+            workbook_id=workbook.id,
+            name=worksheet_data["name"],
+            position=worksheet_data["position"],
+            max_row=worksheet_data.get("max_row", 0),
+            max_column=worksheet_data.get("max_column", 0),
+            is_deleted=False,
+        )
+
+        db.add(worksheet)
+        db.flush()
+
+        cells_snapshot = worksheet_data.get("cells", [])
+
+        for cell_data in cells_snapshot:
+
+            cell = Cell(
+                worksheet_id=worksheet.id,
+                row_index=cell_data["row_index"],
+                column_index=cell_data["column_index"],
+                value=cell_data.get("value"),
+                data_type=cell_data.get("data_type"),
+                formula=cell_data.get("formula"),
+                style=cell_data.get("style"),
+            )
+
+            db.add(cell)
+
+
+    # -----------------------------------------------------------------------
+    # Flush restored cells before creating the new version
+    # -----------------------------------------------------------------------
+
+    db.flush()
+
+    # -----------------------------------------------------------------------
+    # Restore workbook metadata
+    # -----------------------------------------------------------------------
+
+    workbook_data = snapshot_data.get("workbook", {})
+
+    if "name" in workbook_data:
+        workbook.name = workbook_data["name"]
+
+    if "original_filename" in workbook_data:
+        workbook.original_filename = workbook_data["original_filename"]
+
+    # -----------------------------------------------------------------------
+    # Create a NEW version representing the restore
+    # -----------------------------------------------------------------------
+
+    new_version = create_workbook_version(
+        db=db,
+        workbook=workbook,
+        created_by=created_by,
+        change_summary=f"Restored from version {version_number}",
+    )
+
+    return new_version

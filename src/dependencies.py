@@ -71,3 +71,30 @@ def get_current_user(
         )
 
     return user
+
+
+def require_permission(permission_name: str):
+    def permission_dependency(
+        current_user: User = Depends(get_current_user),
+    ) -> User:
+
+        if not current_user.role:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have a role assigned",
+            )
+
+        has_permission = any(
+            permission.name == permission_name
+            for permission in current_user.role.permissions
+        )
+
+        if not has_permission:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission required: {permission_name}",
+            )
+
+        return current_user
+
+    return permission_dependency

@@ -188,3 +188,123 @@ def create_file_version(
     workbook.version = next_version
 
     return version
+
+def restore_file_version(
+    db: Session,
+    excel_file: ExcelFile,
+    version_number: int,
+) -> WorkbookVersion:
+    """
+    Restore a workbook version into the physical Excel file.
+
+    The selected version snapshot is used to rebuild the .xlsx file.
+    """
+
+    if excel_file.workbook_id is None:
+        raise ValueError(
+            "Excel file is not linked to a workbook."
+        )
+
+    version = (
+        db.query(WorkbookVersion)
+        .filter(
+            WorkbookVersion.workbook_id == excel_file.workbook_id,
+            WorkbookVersion.version_number == version_number,
+        )
+        .first()
+    )
+
+    if version is None:
+        raise ValueError(
+            f"Version {version_number} not found."
+        )
+
+    snapshot_data = version.snapshot_data
+
+    if not snapshot_data:
+        raise ValueError(
+            f"Version {version_number} does not contain snapshot data."
+        )
+
+    worksheets_snapshot = snapshot_data.get(
+        "worksheets",
+        [],
+    )
+
+    if not worksheets_snapshot:
+        raise ValueError(
+            f"Version {version_number} contains no worksheets."
+        )
+
+    # Create a new Excel workbook.
+    from openpyxl import Workbook as OpenPyXLWorkbook
+
+    excel_workbook = OpenPyXLWorkbook()
+
+    # Remove the default worksheet.
+    default_sheet = excel_workbook.active
+    excel_workbook.remove(default_sheet)
+
+    for worksheet_data in worksheets_snapshot:
+        worksheet = excel_workbook.create_sheet(
+            title=worksheet_data["name"],
+        )
+
+        cells_snapshot = worksheet_data.get(
+            "cells",
+            [],
+        )
+
+        for cell_data in cells_snapshot:
+            cell = worksheet.cell(
+                row=cell_data["row_index"],
+                column=cell_data["column_index"],
+            )
+
+            cell.value = cell_data.get("value")
+
+            style = cell_data.get("style")
+
+            if not style:
+                continue
+
+            font_data = style.get("font", {})
+
+            cell.font = cell.font.copy(
+                name=font_data.get("name"),
+                size=font_data.get("size"),
+                bold=font_data.get("bold"),
+                italic=font_data.get("italic"),
+                underline=font_data.get("underline"),
+                strike=font_data.get("strike"),
+            )
+
+            alignment_data = style.get(
+                "alignment",
+                {},
+            )
+
+            cell.alignment = cell.alignment.copy(
+                horizontal=alignment_data.get("horizontal"),
+                vertical=alignment_data.get("vertical"),
+                wrap_text=alignment_data.get("wrap_text"),
+            )
+
+            number_format = style.get("number_format")
+
+            if number_format:
+                cell.number_format = number_format
+
+        # Preserve worksheet dimensions where possible.
+        max_row = worksheet_data.get("max_row")
+        max_column = worksheet_data.get("max_column")
+
+        if max_row:
+            worksheet.sheet_view.showGridLines = True
+
+    file_path = get_excel_file_path(excel_file)
+
+    excel_workbook.save(file_path)
+    excel_workbook.close()
+
+    return version

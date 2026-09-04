@@ -11,7 +11,7 @@ from api.schemas import (
     FileUploadResponse,
 )
 from database import get_db
-from dependencies import get_current_user
+from dependencies import get_current_user, require_permission
 from models.excel_file import ExcelFile
 from models.user import User
 from services.excel_import_service import import_excel_to_database
@@ -182,9 +182,10 @@ async def upload_file(
     response_model=list[FileListItem],
 )
 def list_files(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission("view_file")),
     db: Session = Depends(get_db),
-):
+    ):
     """
     Return all Excel files belonging to the current user.
     """

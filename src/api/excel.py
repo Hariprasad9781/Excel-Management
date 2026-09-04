@@ -27,6 +27,7 @@ from database import get_db
 from dependencies import get_current_user
 from models.excel_file import ExcelFile
 from models.user import User
+from models.workbook import Workbook
 from services.excel_service import (
     add_column,
     add_row,
@@ -45,7 +46,11 @@ from services.excel_service import (
 )
 
 from services.file_version_service import create_file_version
-from services.workbook_version_service import get_workbook_versions
+from services.file_version_service import restore_file_version as restore_physical_file_version
+from services.workbook_version_service import (
+    get_workbook_versions,
+    restore_workbook_version,
+)
 
 # ============================================================
 # Router Configuration
@@ -121,6 +126,78 @@ def list_workbook_versions(
         "workbook_id": excel_file.workbook_id,
         "versions": versions,
     }
+
+@router.post(
+    "/{file_id}/versions/{version_number}/restore",
+)
+def restore_file_version(
+    file_id: int,
+    version_number: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    excel_file = get_user_file(
+        file_id=file_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    if excel_file.workbook_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File is not linked to a workbook",
+        )
+
+    workbook = (
+        db.query(Workbook)
+        .filter(
+            Workbook.id == excel_file.workbook_id,
+            Workbook.owner_id == current_user.id,
+            Workbook.is_deleted.is_(False),
+        )
+        .first()
+    )
+
+    if workbook is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workbook not found",
+        )
+
+    try:
+        new_version = restore_workbook_version(
+            db=db,
+            workbook=workbook,
+            version_number=version_number,
+            created_by=current_user.id,
+        )
+
+        restore_physical_file_version(
+            db=db,
+            excel_file=excel_file,
+            version_number=version_number,
+        )
+
+        db.commit()
+        db.refresh(new_version)
+
+        return {
+            "message": f"Workbook restored from version {version_number}",
+            "workbook_id": workbook.id,
+            "restored_from_version": version_number,
+            "new_version": new_version.version_number,
+        }
+    except ValueError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+
+    except Exception:
+        db.rollback()
+        raise
 
 
 # ============================================================
